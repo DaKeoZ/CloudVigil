@@ -28,6 +28,11 @@ class Settings(BaseSettings):
     influxdb_org: str = "cloudvigil"
     influxdb_bucket: str = "system_metrics"
 
+    # ── Alertes ────────────────────────────────────────────────────────────────
+    # Chemin vers le fichier YAML de configuration des alertes.
+    # Relatif au répertoire de travail courant (racine du projet).
+    alerts_config_path: str = "config/alerts.yaml"
+
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:

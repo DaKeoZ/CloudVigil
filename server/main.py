@@ -4,6 +4,7 @@ CloudVigil — Point d'entrée du serveur.
 Lance en parallèle :
   • Un serveur gRPC async (grpc.aio) sur le port configuré (défaut: 50051)
   • Une API HTTP FastAPI sur le port configuré (défaut: 8000)
+  • Le moteur d'alertes en arrière-plan (background task asyncio)
 
 Démarrage :
     uvicorn server.main:app --host 0.0.0.0 --port 8000
@@ -14,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any, AsyncGenerator
 
 import grpc.aio
@@ -23,6 +25,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from server import database, store
+from server.alerts import AlertEngine, load_alert_config
 from server.config import get_settings
 from server.grpc_server import MonitoringServicer
 from server.pb import monitor_pb2_grpc
@@ -38,7 +41,7 @@ log = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-    """Gère le cycle de vie complet : InfluxDB + serveur gRPC."""
+    """Gère le cycle de vie complet : InfluxDB + gRPC + moteur d'alertes."""
     settings = get_settings()
 
     # 1. Initialiser InfluxDB
@@ -53,13 +56,20 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     await grpc_server.start()
     log.info("Serveur gRPC démarré sur %s", settings.grpc_listen)
 
-    # Stocker la référence pour les routes de healthcheck
-    app.state.grpc_server = grpc_server
+    # 3. Charger la configuration des alertes et démarrer le moteur
+    alert_config = load_alert_config(Path(settings.alerts_config_path))
+    alert_engine = AlertEngine(alert_config)
+    await alert_engine.start()
+
+    # Stocker les références pour les routes
+    app.state.grpc_server  = grpc_server
+    app.state.alert_engine = alert_engine
 
     try:
         yield
     finally:
-        # Arrêt gracieux : on laisse 5 s aux flux en cours de se terminer.
+        # Arrêt gracieux : alertes → gRPC → InfluxDB
+        await alert_engine.stop()
         log.info("Arrêt du serveur gRPC (grace=5s)…")
         await grpc_server.stop(grace=5)
         await database.close_db()
@@ -186,6 +196,54 @@ async def list_nodes() -> dict[str, Any]:
     """Retourne la liste de tous les nœuds ayant envoyé au moins un rapport Docker."""
     nodes = store.list_nodes()
     return {"nodes": nodes, "count": len(nodes)}
+
+
+# ── Alertes ───────────────────────────────────────────────────────────────────
+
+@app.get("/alerts/status", summary="État du moteur d'alertes")
+async def alerts_status() -> dict[str, Any]:
+    """
+    Retourne l'état complet du moteur d'alertes :
+    - Règles configurées et leur sévérité
+    - Statistiques (nombre d'évaluations, d'alertes envoyées)
+    - Cooldowns actifs par (nœud, règle)
+    - État des webhooks (Slack / Discord)
+    """
+    engine: AlertEngine = getattr(app.state, "alert_engine", None)
+    if engine is None:
+        raise HTTPException(status_code=503, detail="Moteur d'alertes non initialisé.")
+    return engine.stats()
+
+
+@app.post("/alerts/test", summary="Envoi d'une notification de test sur les webhooks")
+async def alerts_test() -> dict[str, Any]:
+    """
+    Envoie un message de test sur tous les webhooks actifs (Slack et/ou Discord).
+    Utile pour vérifier que les URLs de webhook sont correctement configurées.
+
+    Retourne le résultat par cible : `"ok"` ou `"erreur: <détail>"`.
+    """
+    engine: AlertEngine = getattr(app.state, "alert_engine", None)
+    if engine is None:
+        raise HTTPException(status_code=503, detail="Moteur d'alertes non initialisé.")
+    results = await engine.notifier.send_test()
+    return {"results": results}
+
+
+@app.delete(
+    "/alerts/cooldown/{node_id}/{rule_name}",
+    summary="Réinitialise le cooldown d'une règle pour un nœud",
+)
+async def reset_cooldown(node_id: str, rule_name: str) -> dict[str, str]:
+    """
+    Supprime le cooldown actif pour le couple (node_id, rule_name).
+    Permet de forcer le renvoi immédiat d'une alerte sans attendre l'expiration.
+    """
+    engine: AlertEngine = getattr(app.state, "alert_engine", None)
+    if engine is None:
+        raise HTTPException(status_code=503, detail="Moteur d'alertes non initialisé.")
+    engine.cooldown.reset(node_id, rule_name)
+    return {"status": "ok", "message": f"Cooldown réinitialisé pour ({node_id}, {rule_name})."}
 
 
 @app.get("/", include_in_schema=False)

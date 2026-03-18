@@ -1,0 +1,69 @@
+# ══════════════════════════════════════════════════════════════════════════════
+# CloudVigil — Configuration des alertes
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# Chaque règle définit :
+#   metric            : cpu_usage | ram_usage | disk_usage
+#   operator          : > | >= | < | <=
+#   threshold         : valeur seuil en pourcent (0–100)
+#   duration_minutes  : durée minimale de dépassement pour déclencher une alerte
+#   cooldown_minutes  : délai avant une nouvelle alerte sur la même règle/nœud
+#   severity          : info | warning | critical
+#
+# Webhooks : renseigner l'URL et passer enabled à true pour activer.
+
+# ── Règles d'alerte ───────────────────────────────────────────────────────────
+rules:
+
+  - name: "CPU critique"
+    metric: cpu_usage
+    operator: ">"
+    threshold: 90.0
+    duration_minutes: 5      # Le CPU doit dépasser 90 % pendant 5 min consécutives
+    cooldown_minutes: 30
+    severity: critical
+
+  - name: "CPU élevé"
+    metric: cpu_usage
+    operator: ">"
+    threshold: 75.0
+    duration_minutes: 10
+    cooldown_minutes: 30
+    severity: warning
+
+  - name: "RAM critique"
+    metric: ram_usage
+    operator: ">"
+    threshold: 90.0
+    duration_minutes: 5
+    cooldown_minutes: 30
+    severity: critical
+
+  - name: "RAM élevée"
+    metric: ram_usage
+    operator: ">"
+    threshold: 80.0
+    duration_minutes: 10
+    cooldown_minutes: 30
+    severity: warning
+
+  - name: "Disque critique"
+    metric: disk_usage
+    operator: ">"
+    threshold: 95.0
+    duration_minutes: 1      # Disque plein → alerte quasi immédiate
+    cooldown_minutes: 60
+    severity: critical
+
+# ── Destinations des notifications ────────────────────────────────────────────
+webhooks:
+
+  slack:
+    enabled: false
+    # Créer un Incoming Webhook sur https://api.slack.com/messaging/webhooks
+    url: "https://hooks.slack.com/services/TXXXXXXXX/BXXXXXXXX/XXXXXXXXXXXXXXXXXXXXXXXX"
+
+  discord:
+    enabled: false
+    # Créer un Webhook dans Paramètres du salon → Intégrations → Webhooks
+    url: "https://discord.com/api/webhooks/XXXXXXXXXX/XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"

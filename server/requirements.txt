@@ -15,3 +15,11 @@ influxdb-client[async]==1.43.0
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 pydantic-settings==2.2.1
+
+# ── Alertes ────────────────────────────────────────────────────────────────────
+# Lecture du fichier config/alerts.yaml
+pyyaml==6.0.1
+# Client HTTP async pour les webhooks Slack/Discord
+# (aiohttp est déjà une dépendance transitive de influxdb-client[async],
+#  on l'épingle ici pour rendre la dépendance explicite)
+aiohttp==3.9.5
