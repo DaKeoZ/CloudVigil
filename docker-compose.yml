@@ -1,0 +1,57 @@
+services:
+
+  # ── InfluxDB v2 ─────────────────────────────────────────────────────────────
+  influxdb:
+    image: influxdb:2.7
+    container_name: cloudvigil-influxdb
+    restart: unless-stopped
+    ports:
+      - "8086:8086"
+    environment:
+      # Mode auto-setup : crée l'utilisateur, l'org, le bucket et le token au premier démarrage.
+      DOCKER_INFLUXDB_INIT_MODE:         setup
+      DOCKER_INFLUXDB_INIT_USERNAME:     admin
+      DOCKER_INFLUXDB_INIT_PASSWORD:     cloudvigil-admin-2024
+      DOCKER_INFLUXDB_INIT_ORG:          cloudvigil
+      DOCKER_INFLUXDB_INIT_BUCKET:       system_metrics
+      DOCKER_INFLUXDB_INIT_RETENTION:    30d
+      DOCKER_INFLUXDB_INIT_ADMIN_TOKEN:  cloudvigil-dev-token
+    volumes:
+      - influxdb_data:/var/lib/influxdb2
+      - influxdb_config:/etc/influxdb2
+    healthcheck:
+      test: ["CMD", "influx", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  # ── CloudVigil Server (Python / FastAPI + gRPC) ─────────────────────────────
+  server:
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+    container_name: cloudvigil-server
+    restart: unless-stopped
+    ports:
+      - "8000:8000"   # API HTTP / FastAPI
+      - "50051:50051" # gRPC
+    environment:
+      CLOUDVIGIL_INFLUXDB_URL:    http://influxdb:8086
+      CLOUDVIGIL_INFLUXDB_TOKEN:  cloudvigil-dev-token
+      CLOUDVIGIL_INFLUXDB_ORG:    cloudvigil
+      CLOUDVIGIL_INFLUXDB_BUCKET: system_metrics
+      CLOUDVIGIL_GRPC_LISTEN:     "[::]:50051"
+    depends_on:
+      influxdb:
+        condition: service_healthy
+    profiles:
+      # Activer avec : docker compose --profile full up
+      # Sinon, lancer le serveur manuellement avec `make run-server`
+      - full
+
+volumes:
+  influxdb_data:
+    name: cloudvigil_influxdb_data
+  influxdb_config:
+    name: cloudvigil_influxdb_config

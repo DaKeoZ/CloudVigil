@@ -21,8 +21,14 @@ message StreamRequest {
   uint32 interval_seconds = 2; // Intervalle de collecte souhaité
 }
 
+// StreamResponse est renvoyé par le serveur à la clôture du flux.
+message StreamResponse {
+  string status = 1; // "ok" ou description d'erreur
+}
+
 // MonitoringService expose les méthodes de collecte de métriques en temps réel.
 service MonitoringService {
-  // StreamMetrics ouvre un flux server-side : l'agent envoie des rapports en continu.
-  rpc StreamMetrics(StreamRequest) returns (stream MetricReport);
+  // StreamMetrics : flux client-streaming — l'agent envoie des MetricReport en continu,
+  // le serveur répond avec un StreamResponse une fois le flux terminé.
+  rpc StreamMetrics(stream MetricReport) returns (StreamResponse);
 }

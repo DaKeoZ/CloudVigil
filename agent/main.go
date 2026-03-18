@@ -36,7 +36,6 @@ func loadConfig() config {
 			diskPath = "/"
 		}
 	}
-
 	return config{
 		ServerAddr:      envOrDefault("CLOUDVIGIL_SERVER", "localhost:50051"),
 		NodeID:          envOrDefault("CLOUDVIGIL_NODE_ID", mustHostname()),
@@ -63,7 +62,7 @@ func main() {
 			return
 		}
 
-		err := runStreamSession(ctx, cfg, collector)
+		err := runStreamSession(ctx, cfg, collector, backoff)
 		if err == nil || errors.Is(err, context.Canceled) {
 			return
 		}
@@ -76,9 +75,9 @@ func main() {
 	}
 }
 
-// runStreamSession ouvre une connexion gRPC, démarre le flux et envoie les
-// métriques jusqu'à ce qu'une erreur survienne ou que le contexte soit annulé.
-func runStreamSession(ctx context.Context, cfg config, collector *metrics.Collector) error {
+// runStreamSession ouvre une connexion gRPC, envoie les métriques en client-streaming
+// jusqu'à ce qu'une erreur survienne ou que le contexte soit annulé.
+func runStreamSession(ctx context.Context, cfg config, collector *metrics.Collector, backoff *connect.Policy) error {
 	conn, err := grpc.NewClient(
 		cfg.ServerAddr,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
@@ -90,18 +89,12 @@ func runStreamSession(ctx context.Context, cfg config, collector *metrics.Collec
 
 	client := pb.NewMonitoringServiceClient(conn)
 
-	stream, err := client.StreamMetrics(ctx, &pb.StreamRequest{
-		NodeId:          cfg.NodeID,
-		IntervalSeconds: uint32(cfg.CollectInterval.Seconds()),
-	})
+	stream, err := client.StreamMetrics(ctx)
 	if err != nil {
 		return err
 	}
 
 	log.Printf("[agent] flux ouvert vers %s", cfg.ServerAddr)
-
-	// Réinitialiser le backoff dès que la connexion est établie.
-	backoff := &connect.Policy{}
 	backoff.Reset()
 
 	ticker := time.NewTicker(cfg.CollectInterval)
@@ -110,6 +103,13 @@ func runStreamSession(ctx context.Context, cfg config, collector *metrics.Collec
 	for {
 		select {
 		case <-ctx.Done():
+			// Clôture propre : on prévient le serveur et on attend sa réponse.
+			resp, closeErr := stream.CloseAndRecv()
+			if closeErr != nil && !errors.Is(closeErr, io.EOF) {
+				log.Printf("[agent] erreur à la clôture : %v", closeErr)
+			} else if resp != nil {
+				log.Printf("[agent] serveur a répondu : %s", resp.GetStatus())
+			}
 			return ctx.Err()
 
 		case <-ticker.C:
@@ -127,23 +127,12 @@ func runStreamSession(ctx context.Context, cfg config, collector *metrics.Collec
 				Timestamp: timestamppb.New(snap.CollectedAt),
 			}
 
-			// En mode server-streaming le client ne peut pas envoyer après
-			// l'envoi initial du StreamRequest. On utilise le flux pour
-			// démontrer la réception côté serveur ; l'envoi réel de rapports
-			// nécessiterait un flux bidirectionnel (prévu dans la v2).
-			// Pour l'instant on logue localement et on vérifie que le flux est vivant.
-			log.Printf("[agent] métrique — cpu=%.1f%% ram=%.1f%% disk=%.1f%%",
-				report.CpuUsage, report.RamUsage, report.DiskUsage)
-
-			// Vérification de la santé du flux (le serveur peut l'avoir fermé).
-			_, recvErr := stream.Recv()
-			if recvErr != nil {
-				if errors.Is(recvErr, io.EOF) {
-					log.Println("[agent] serveur a fermé le flux proprement.")
-					return nil
-				}
-				return recvErr
+			if err := stream.Send(report); err != nil {
+				return err // déclenche une reconnexion avec backoff
 			}
+
+			log.Printf("[agent] envoyé — cpu=%.1f%% ram=%.1f%% disk=%.1f%%",
+				report.CpuUsage, report.RamUsage, report.DiskUsage)
 		}
 	}
 }

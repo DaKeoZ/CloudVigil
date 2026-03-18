@@ -11,9 +11,13 @@ import (
 	status "google.golang.org/grpc/status"
 )
 
+// ── Client ────────────────────────────────────────────────────────────────────
+
 // MonitoringServiceClient est l'interface client du service gRPC.
 type MonitoringServiceClient interface {
-	StreamMetrics(ctx context.Context, in *StreamRequest, opts ...grpc.CallOption) (MonitoringService_StreamMetricsClient, error)
+	// StreamMetrics ouvre un flux client-streaming : l'agent envoie des MetricReport,
+	// le serveur répond avec un StreamResponse à la clôture.
+	StreamMetrics(ctx context.Context, opts ...grpc.CallOption) (MonitoringService_StreamMetricsClient, error)
 }
 
 type monitoringServiceClient struct {
@@ -24,23 +28,17 @@ func NewMonitoringServiceClient(cc grpc.ClientConnInterface) MonitoringServiceCl
 	return &monitoringServiceClient{cc}
 }
 
-func (c *monitoringServiceClient) StreamMetrics(ctx context.Context, in *StreamRequest, opts ...grpc.CallOption) (MonitoringService_StreamMetricsClient, error) {
+func (c *monitoringServiceClient) StreamMetrics(ctx context.Context, opts ...grpc.CallOption) (MonitoringService_StreamMetricsClient, error) {
 	stream, err := c.cc.NewStream(ctx, &MonitoringService_ServiceDesc.Streams[0], "/monitor.MonitoringService/StreamMetrics", opts...)
 	if err != nil {
 		return nil, err
 	}
-	x := &monitoringServiceStreamMetricsClient{stream}
-	if err := x.ClientStream.SendMsg(in); err != nil {
-		return nil, err
-	}
-	if err := x.ClientStream.CloseSend(); err != nil {
-		return nil, err
-	}
-	return x, nil
+	return &monitoringServiceStreamMetricsClient{stream}, nil
 }
 
 type MonitoringService_StreamMetricsClient interface {
-	Recv() (*MetricReport, error)
+	Send(*MetricReport) error
+	CloseAndRecv() (*StreamResponse, error)
 	grpc.ClientStream
 }
 
@@ -48,30 +46,39 @@ type monitoringServiceStreamMetricsClient struct {
 	grpc.ClientStream
 }
 
-func (x *monitoringServiceStreamMetricsClient) Recv() (*MetricReport, error) {
-	m := new(MetricReport)
+func (x *monitoringServiceStreamMetricsClient) Send(m *MetricReport) error {
+	return x.ClientStream.SendMsg(m)
+}
+
+func (x *monitoringServiceStreamMetricsClient) CloseAndRecv() (*StreamResponse, error) {
+	if err := x.ClientStream.CloseSend(); err != nil {
+		return nil, err
+	}
+	m := new(StreamResponse)
 	if err := x.ClientStream.RecvMsg(m); err != nil {
 		return nil, err
 	}
 	return m, nil
 }
 
+// ── Serveur ───────────────────────────────────────────────────────────────────
+
 // MonitoringServiceServer est l'interface à implémenter côté serveur.
 type MonitoringServiceServer interface {
-	StreamMetrics(*StreamRequest, MonitoringService_StreamMetricsServer) error
+	StreamMetrics(MonitoringService_StreamMetricsServer) error
 	mustEmbedUnimplementedMonitoringServiceServer()
 }
 
-// UnimplementedMonitoringServiceServer doit être embarqué pour assurer la compatibilité future.
+// UnimplementedMonitoringServiceServer doit être embarqué pour la compatibilité future.
 type UnimplementedMonitoringServiceServer struct{}
 
-func (UnimplementedMonitoringServiceServer) StreamMetrics(*StreamRequest, MonitoringService_StreamMetricsServer) error {
+func (UnimplementedMonitoringServiceServer) StreamMetrics(MonitoringService_StreamMetricsServer) error {
 	return status.Errorf(codes.Unimplemented, "method StreamMetrics not implemented")
 }
 
 func (UnimplementedMonitoringServiceServer) mustEmbedUnimplementedMonitoringServiceServer() {}
 
-// UnsafeMonitoringServiceServer peut être embarqué pour ne pas assurer la compatibilité ascendante.
+// UnsafeMonitoringServiceServer peut être embarqué sans garantie de compatibilité ascendante.
 type UnsafeMonitoringServiceServer interface {
 	mustEmbedUnimplementedMonitoringServiceServer()
 }
@@ -81,7 +88,8 @@ func RegisterMonitoringServiceServer(s grpc.ServiceRegistrar, srv MonitoringServ
 }
 
 type MonitoringService_StreamMetricsServer interface {
-	Send(*MetricReport) error
+	SendAndClose(*StreamResponse) error
+	Recv() (*MetricReport, error)
 	grpc.ServerStream
 }
 
@@ -89,9 +97,19 @@ type monitoringServiceStreamMetricsServer struct {
 	grpc.ServerStream
 }
 
-func (x *monitoringServiceStreamMetricsServer) Send(m *MetricReport) error {
+func (x *monitoringServiceStreamMetricsServer) SendAndClose(m *StreamResponse) error {
 	return x.ServerStream.SendMsg(m)
 }
+
+func (x *monitoringServiceStreamMetricsServer) Recv() (*MetricReport, error) {
+	m := new(MetricReport)
+	if err := x.ServerStream.RecvMsg(m); err != nil {
+		return nil, err
+	}
+	return m, nil
+}
+
+// ── Descripteur de service ────────────────────────────────────────────────────
 
 var MonitoringService_ServiceDesc = grpc.ServiceDesc{
 	ServiceName: "monitor.MonitoringService",
@@ -101,16 +119,12 @@ var MonitoringService_ServiceDesc = grpc.ServiceDesc{
 		{
 			StreamName:    "StreamMetrics",
 			Handler:       _MonitoringService_StreamMetrics_Handler,
-			ServerStreams: true,
+			ClientStreams: true,
 		},
 	},
 	Metadata: "monitor.proto",
 }
 
 func _MonitoringService_StreamMetrics_Handler(srv interface{}, stream grpc.ServerStream) error {
-	m := new(StreamRequest)
-	if err := stream.RecvMsg(m); err != nil {
-		return err
-	}
-	return srv.(MonitoringServiceServer).StreamMetrics(m, &monitoringServiceStreamMetricsServer{stream})
+	return srv.(MonitoringServiceServer).StreamMetrics(&monitoringServiceStreamMetricsServer{stream})
 }

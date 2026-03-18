@@ -1,0 +1,88 @@
+"""Gestion de la connexion InfluxDB et healthcheck."""
+
+from __future__ import annotations
+
+import logging
+from datetime import datetime, timezone
+from typing import TYPE_CHECKING
+
+from influxdb_client import Point
+from influxdb_client.client.influxdb_client_async import InfluxDBClientAsync
+
+from server.config import get_settings
+
+if TYPE_CHECKING:
+    from influxdb_client.client.write_api_async import WriteApiAsync
+
+log = logging.getLogger(__name__)
+
+# Singleton client — initialisé dans le lifespan FastAPI.
+_client: InfluxDBClientAsync | None = None
+_write_api: WriteApiAsync | None = None
+
+
+async def init_db() -> None:
+    """Ouvre la connexion InfluxDB et initialise le write API async."""
+    global _client, _write_api
+    settings = get_settings()
+
+    _client = InfluxDBClientAsync(
+        url=settings.influxdb_url,
+        token=settings.influxdb_token,
+        org=settings.influxdb_org,
+    )
+    _write_api = _client.write_api()
+    log.info("InfluxDB connecté → %s (org=%s)", settings.influxdb_url, settings.influxdb_org)
+
+
+async def close_db() -> None:
+    """Ferme proprement le client InfluxDB."""
+    global _client
+    if _client is not None:
+        await _client.close()
+        _client = None
+        log.info("InfluxDB déconnecté.")
+
+
+async def health_check() -> bool:
+    """Retourne True si InfluxDB répond correctement au ping."""
+    if _client is None:
+        return False
+    try:
+        return await _client.ping()
+    except Exception as exc:
+        log.warning("InfluxDB healthcheck échoué : %s", exc)
+        return False
+
+
+async def write_metric(
+    node_id: str,
+    cpu_usage: float,
+    ram_usage: float,
+    disk_usage: float,
+    timestamp: datetime,
+) -> None:
+    """Écrit un Point de métriques système dans le bucket InfluxDB configuré."""
+    if _write_api is None:
+        raise RuntimeError("La base de données n'est pas initialisée.")
+
+    settings = get_settings()
+
+    # Le timestamp doit être timezone-aware (UTC) pour InfluxDB v2.
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.replace(tzinfo=timezone.utc)
+
+    point = (
+        Point("system_metrics")
+        .tag("node_id", node_id)
+        .field("cpu_usage", float(cpu_usage))
+        .field("ram_usage", float(ram_usage))
+        .field("disk_usage", float(disk_usage))
+        .time(timestamp)
+    )
+
+    await _write_api.write(bucket=settings.influxdb_bucket, record=point)
+    log.debug(
+        "Point écrit — node=%s cpu=%.1f%% ram=%.1f%% disk=%.1f%%",
+        node_id, cpu_usage, ram_usage, disk_usage,
+    )

@@ -118,6 +118,38 @@ func (x *StreamRequest) GetIntervalSeconds() uint32 {
 	return 0
 }
 
-var file_monitor_proto_msgTypes = make([]protoimpl.MessageInfo, 2)
+// StreamResponse est renvoyé par le serveur à la clôture du flux.
+type StreamResponse struct {
+	state         protoimpl.MessageState
+	sizeCache     protoimpl.SizeCache
+	unknownFields protoimpl.UnknownFields
+
+	Status string `protobuf:"bytes,1,opt,name=status,proto3" json:"status,omitempty"`
+}
+
+func (x *StreamResponse) Reset()        { *x = StreamResponse{} }
+func (x *StreamResponse) String() string { return protoimpl.X.MessageStringOf(x) }
+func (x *StreamResponse) ProtoMessage() {}
+
+func (x *StreamResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_monitor_proto_msgTypes[2]
+	if protoimpl.UnsafeEnabled && x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+func (x *StreamResponse) GetStatus() string {
+	if x != nil {
+		return x.Status
+	}
+	return ""
+}
+
+var file_monitor_proto_msgTypes = make([]protoimpl.MessageInfo, 3)
 
 var File_monitor_proto protoreflect.FileDescriptor
