@@ -44,6 +44,44 @@ async def close_db() -> None:
         log.info("InfluxDB déconnecté.")
 
 
+async def query_metrics_all_nodes(minutes: int = 10) -> dict[str, list[dict]]:
+    """
+    Interroge InfluxDB pour obtenir l'historique des métriques système de tous les nœuds
+    sur les `minutes` dernières minutes.
+    Retourne un dict { node_id: [{ timestamp, cpu_usage, ram_usage, disk_usage }, ...] }.
+    """
+    if _client is None:
+        return {}
+
+    settings = get_settings()
+    flux = f"""
+from(bucket: "{settings.influxdb_bucket}")
+  |> range(start: -{minutes}m)
+  |> filter(fn: (r) => r._measurement == "system_metrics")
+  |> pivot(rowKey: ["_time"], columnKey: ["_field"], valueColumn: "_value")
+  |> sort(columns: ["_time"])
+"""
+    try:
+        query_api = _client.query_api()
+        tables = await query_api.query(flux, org=settings.influxdb_org)
+        nodes: dict[str, list] = {}
+        for table in tables:
+            for record in table.records:
+                nid = record.values.get("node_id", "unknown")
+                nodes.setdefault(nid, []).append(
+                    {
+                        "timestamp": record.get_time().isoformat(),
+                        "cpu_usage": round(float(record.values.get("cpu_usage") or 0), 2),
+                        "ram_usage": round(float(record.values.get("ram_usage") or 0), 2),
+                        "disk_usage": round(float(record.values.get("disk_usage") or 0), 2),
+                    }
+                )
+        return nodes
+    except Exception as exc:
+        log.warning("Requête InfluxDB échouée : %s", exc)
+        return {}
+
+
 async def health_check() -> bool:
     """Retourne True si InfluxDB répond correctement au ping."""
     if _client is None:

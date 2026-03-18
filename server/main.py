@@ -19,6 +19,7 @@ from typing import Any, AsyncGenerator
 import grpc.aio
 import uvicorn
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from server import database, store
@@ -73,6 +74,19 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# CORS : autorise le frontend Next.js (dev sur :3000, prod configurable via env).
+_settings = get_settings()
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        f"http://{_settings.http_host}:{_settings.http_port}",
+    ],
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["*"],
+)
+
 
 # ── Routes ────────────────────────────────────────────────────────────────────
 
@@ -125,6 +139,46 @@ async def get_node_containers(node_id: str) -> dict[str, Any]:
             detail=f"Nœud '{node_id}' inconnu ou Docker non disponible sur cet agent.",
         )
     return data
+
+
+@app.get("/dashboard", summary="Vue d'ensemble de tous les nœuds monitorés")
+async def get_dashboard() -> dict[str, Any]:
+    """
+    Endpoint principal du frontend CloudVigil.
+    Retourne pour chaque nœud connu :
+    - Son statut (online / offline)
+    - La dernière mesure système (CPU / RAM / disque)
+    - L'historique des 10 dernières minutes pour les sparklines
+    - Le résumé des conteneurs Docker (si disponible)
+    """
+    # Métriques système depuis InfluxDB
+    metrics_by_node = await database.query_metrics_all_nodes(minutes=10)
+
+    # Nœuds ayant envoyé des données Docker (store mémoire)
+    docker_node_ids = set(store.list_nodes())
+
+    # Union des sources de données
+    all_node_ids = set(metrics_by_node.keys()) | docker_node_ids
+
+    result = []
+    for node_id in sorted(all_node_ids):
+        history = metrics_by_node.get(node_id, [])
+        latest = history[-1] if history else None
+        containers_data = store.get_containers(node_id)
+
+        result.append(
+            {
+                "node_id": node_id,
+                "status": "online" if latest else "offline",
+                "latest": latest,
+                "history": history,
+                "containers": containers_data.get("containers", []) if containers_data else [],
+                "container_count": containers_data.get("count", 0) if containers_data else 0,
+                "updated_at": containers_data.get("updated_at") if containers_data else None,
+            }
+        )
+
+    return {"nodes": result, "total": len(result)}
 
 
 @app.get("/nodes", summary="Liste des nœuds avec données Docker")

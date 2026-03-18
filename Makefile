@@ -57,7 +57,7 @@ proto-py:
 # ------------------------------------------------------------------------------
 # Installation des dépendances
 # ------------------------------------------------------------------------------
-deps: deps-go deps-py
+deps: deps-go deps-py deps-frontend
 
 deps-go:
 	@echo "==> Installation des dépendances Go..."
@@ -91,6 +91,21 @@ build:
 	@echo "==> Compilation de l'agent Go..."
 	mkdir -p agent/bin
 	cd agent && go build -o bin/cloudvigil-agent ./...
+
+# ------------------------------------------------------------------------------
+# Frontend Next.js
+# ------------------------------------------------------------------------------
+deps-frontend:
+	@echo "==> Installation des dépendances Frontend..."
+	cd frontend && npm install
+
+run-frontend:
+	@echo "==> Démarrage du Frontend Next.js (port 3000)..."
+	cd frontend && npm run dev
+
+build-frontend:
+	@echo "==> Build production du Frontend..."
+	cd frontend && npm run build
 
 # ------------------------------------------------------------------------------
 # Lint / Qualité de code

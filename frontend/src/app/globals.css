@@ -1,0 +1,37 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    color-scheme: dark;
+  }
+
+  * {
+    @apply border-slate-800;
+  }
+
+  body {
+    @apply bg-slate-950 text-slate-50 antialiased;
+  }
+
+  /* Fond transparent pour les graphiques Tremor/Recharts */
+  .recharts-surface,
+  .recharts-wrapper {
+    background: transparent !important;
+  }
+
+  /* Supprime le fond blanc du tooltip Recharts en dark mode */
+  .recharts-tooltip-wrapper .recharts-default-tooltip {
+    @apply bg-slate-800 border-slate-700 text-slate-200 rounded-lg text-xs;
+  }
+}
+
+@layer utilities {
+  .scrollbar-hidden {
+    scrollbar-width: none;
+  }
+  .scrollbar-hidden::-webkit-scrollbar {
+    display: none;
+  }
+}
