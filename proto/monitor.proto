@@ -21,14 +21,34 @@ message StreamRequest {
   uint32 interval_seconds = 2; // Intervalle de collecte souhaité
 }
 
-// StreamResponse est renvoyé par le serveur à la clôture du flux.
+// StreamResponse est renvoyé par le serveur à la clôture de n'importe quel flux.
 message StreamResponse {
   string status = 1; // "ok" ou description d'erreur
 }
 
+// ContainerInfo représente l'état et la consommation de ressources d'un conteneur Docker.
+message ContainerInfo {
+  string id          = 1; // ID court (12 caractères)
+  string name        = 2;
+  string image       = 3;
+  string state       = 4; // "running" | "exited" | "paused" | ...
+  float  cpu_percent  = 5; // % CPU toutes cœurs confondus
+  float  mem_usage_mb = 6; // Mémoire résidente en Mo (hors cache)
+  float  mem_limit_mb = 7; // Limite mémoire configurée en Mo
+}
+
+// DockerReport contient le snapshot Docker d'un nœud à un instant donné.
+message DockerReport {
+  string node_id                     = 1;
+  repeated ContainerInfo containers  = 2;
+  google.protobuf.Timestamp timestamp = 3;
+}
+
 // MonitoringService expose les méthodes de collecte de métriques en temps réel.
 service MonitoringService {
-  // StreamMetrics : flux client-streaming — l'agent envoie des MetricReport en continu,
-  // le serveur répond avec un StreamResponse une fois le flux terminé.
+  // StreamMetrics : flux système (CPU / RAM / disque).
   rpc StreamMetrics(stream MetricReport) returns (StreamResponse);
+
+  // StreamDockerStatus : flux Docker — l'agent envoie l'état des conteneurs si Docker est détecté.
+  rpc StreamDockerStatus(stream DockerReport) returns (StreamResponse);
 }

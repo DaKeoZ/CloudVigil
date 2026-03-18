@@ -15,9 +15,10 @@ import (
 
 // MonitoringServiceClient est l'interface client du service gRPC.
 type MonitoringServiceClient interface {
-	// StreamMetrics ouvre un flux client-streaming : l'agent envoie des MetricReport,
-	// le serveur répond avec un StreamResponse à la clôture.
+	// StreamMetrics : flux système (CPU / RAM / disque).
 	StreamMetrics(ctx context.Context, opts ...grpc.CallOption) (MonitoringService_StreamMetricsClient, error)
+	// StreamDockerStatus : flux Docker — liste des conteneurs et leurs ressources.
+	StreamDockerStatus(ctx context.Context, opts ...grpc.CallOption) (MonitoringService_StreamDockerStatusClient, error)
 }
 
 type monitoringServiceClient struct {
@@ -61,11 +62,45 @@ func (x *monitoringServiceStreamMetricsClient) CloseAndRecv() (*StreamResponse, 
 	return m, nil
 }
 
+func (c *monitoringServiceClient) StreamDockerStatus(ctx context.Context, opts ...grpc.CallOption) (MonitoringService_StreamDockerStatusClient, error) {
+	stream, err := c.cc.NewStream(ctx, &MonitoringService_ServiceDesc.Streams[1], "/monitor.MonitoringService/StreamDockerStatus", opts...)
+	if err != nil {
+		return nil, err
+	}
+	return &monitoringServiceStreamDockerStatusClient{stream}, nil
+}
+
+type MonitoringService_StreamDockerStatusClient interface {
+	Send(*DockerReport) error
+	CloseAndRecv() (*StreamResponse, error)
+	grpc.ClientStream
+}
+
+type monitoringServiceStreamDockerStatusClient struct {
+	grpc.ClientStream
+}
+
+func (x *monitoringServiceStreamDockerStatusClient) Send(m *DockerReport) error {
+	return x.ClientStream.SendMsg(m)
+}
+
+func (x *monitoringServiceStreamDockerStatusClient) CloseAndRecv() (*StreamResponse, error) {
+	if err := x.ClientStream.CloseSend(); err != nil {
+		return nil, err
+	}
+	m := new(StreamResponse)
+	if err := x.ClientStream.RecvMsg(m); err != nil {
+		return nil, err
+	}
+	return m, nil
+}
+
 // ── Serveur ───────────────────────────────────────────────────────────────────
 
 // MonitoringServiceServer est l'interface à implémenter côté serveur.
 type MonitoringServiceServer interface {
 	StreamMetrics(MonitoringService_StreamMetricsServer) error
+	StreamDockerStatus(MonitoringService_StreamDockerStatusServer) error
 	mustEmbedUnimplementedMonitoringServiceServer()
 }
 
@@ -74,6 +109,10 @@ type UnimplementedMonitoringServiceServer struct{}
 
 func (UnimplementedMonitoringServiceServer) StreamMetrics(MonitoringService_StreamMetricsServer) error {
 	return status.Errorf(codes.Unimplemented, "method StreamMetrics not implemented")
+}
+
+func (UnimplementedMonitoringServiceServer) StreamDockerStatus(MonitoringService_StreamDockerStatusServer) error {
+	return status.Errorf(codes.Unimplemented, "method StreamDockerStatus not implemented")
 }
 
 func (UnimplementedMonitoringServiceServer) mustEmbedUnimplementedMonitoringServiceServer() {}
@@ -109,6 +148,29 @@ func (x *monitoringServiceStreamMetricsServer) Recv() (*MetricReport, error) {
 	return m, nil
 }
 
+// MonitoringService_StreamDockerStatusServer — interface serveur pour StreamDockerStatus.
+type MonitoringService_StreamDockerStatusServer interface {
+	SendAndClose(*StreamResponse) error
+	Recv() (*DockerReport, error)
+	grpc.ServerStream
+}
+
+type monitoringServiceStreamDockerStatusServer struct {
+	grpc.ServerStream
+}
+
+func (x *monitoringServiceStreamDockerStatusServer) SendAndClose(m *StreamResponse) error {
+	return x.ServerStream.SendMsg(m)
+}
+
+func (x *monitoringServiceStreamDockerStatusServer) Recv() (*DockerReport, error) {
+	m := new(DockerReport)
+	if err := x.ServerStream.RecvMsg(m); err != nil {
+		return nil, err
+	}
+	return m, nil
+}
+
 // ── Descripteur de service ────────────────────────────────────────────────────
 
 var MonitoringService_ServiceDesc = grpc.ServiceDesc{
@@ -121,10 +183,19 @@ var MonitoringService_ServiceDesc = grpc.ServiceDesc{
 			Handler:       _MonitoringService_StreamMetrics_Handler,
 			ClientStreams: true,
 		},
+		{
+			StreamName:    "StreamDockerStatus",
+			Handler:       _MonitoringService_StreamDockerStatus_Handler,
+			ClientStreams: true,
+		},
 	},
 	Metadata: "monitor.proto",
 }
 
 func _MonitoringService_StreamMetrics_Handler(srv interface{}, stream grpc.ServerStream) error {
 	return srv.(MonitoringServiceServer).StreamMetrics(&monitoringServiceStreamMetricsServer{stream})
+}
+
+func _MonitoringService_StreamDockerStatus_Handler(srv interface{}, stream grpc.ServerStream) error {
+	return srv.(MonitoringServiceServer).StreamDockerStatus(&monitoringServiceStreamDockerStatusServer{stream})
 }

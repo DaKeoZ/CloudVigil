@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/cloudvigil/agent/internal/connect"
+	dockercollector "github.com/cloudvigil/agent/internal/docker"
 	"github.com/cloudvigil/agent/internal/metrics"
 	"github.com/cloudvigil/agent/pb"
 	"google.golang.org/grpc"
@@ -46,56 +47,68 @@ func loadConfig() config {
 
 func main() {
 	cfg := loadConfig()
-	collector := metrics.New(cfg.DiskPath)
-	backoff := &connect.Policy{}
+	sysCollector := metrics.New(cfg.DiskPath)
 
-	// Contexte racine annulé par SIGINT / SIGTERM pour un arrêt gracieux.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	log.Printf("[agent] démarrage — node_id=%s server=%s interval=%s",
 		cfg.NodeID, cfg.ServerAddr, cfg.CollectInterval)
 
+	// ── Flux 1 : métriques système (toujours actif) ───────────────────────────
+	go runWithBackoff(ctx, "metrics", func(c context.Context) error {
+		return runMetricsSession(c, cfg, sysCollector)
+	})
+
+	// ── Flux 2 : Docker (activé uniquement si le daemon est détecté) ──────────
+	dkr, err := dockercollector.NewCollector()
+	if err != nil {
+		log.Printf("[agent] Docker non détecté, monitoring des conteneurs désactivé : %v", err)
+	} else {
+		defer dkr.Close()
+		log.Println("[agent] Docker détecté — démarrage du flux de conteneurs")
+		go runWithBackoff(ctx, "docker", func(c context.Context) error {
+			return runDockerSession(c, cfg, dkr)
+		})
+	}
+
+	// Attendre le signal d'arrêt.
+	<-ctx.Done()
+	log.Println("[agent] signal reçu, arrêt en cours…")
+}
+
+// runWithBackoff boucle avec un backoff exponentiel jusqu'à l'annulation du contexte.
+func runWithBackoff(ctx context.Context, label string, fn func(context.Context) error) {
+	bp := &connect.Policy{}
 	for {
 		if ctx.Err() != nil {
-			log.Println("[agent] arrêt demandé, bye.")
 			return
 		}
-
-		err := runStreamSession(ctx, cfg, collector, backoff)
+		err := fn(ctx)
 		if err == nil || errors.Is(err, context.Canceled) {
 			return
 		}
-
-		log.Printf("[agent] session perdue : %v", err)
-		if !backoff.Wait(ctx) {
-			log.Println("[agent] contexte annulé pendant le backoff, bye.")
+		log.Printf("[%s] session perdue : %v", label, err)
+		if !bp.Wait(ctx) {
 			return
 		}
 	}
 }
 
-// runStreamSession ouvre une connexion gRPC, envoie les métriques en client-streaming
-// jusqu'à ce qu'une erreur survienne ou que le contexte soit annulé.
-func runStreamSession(ctx context.Context, cfg config, collector *metrics.Collector, backoff *connect.Policy) error {
-	conn, err := grpc.NewClient(
-		cfg.ServerAddr,
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
-	)
+// ── Session métriques système ─────────────────────────────────────────────────
+
+func runMetricsSession(ctx context.Context, cfg config, collector *metrics.Collector) error {
+	conn, err := dialServer(cfg.ServerAddr)
 	if err != nil {
 		return err
 	}
 	defer conn.Close()
 
-	client := pb.NewMonitoringServiceClient(conn)
-
-	stream, err := client.StreamMetrics(ctx)
+	stream, err := pb.NewMonitoringServiceClient(conn).StreamMetrics(ctx)
 	if err != nil {
 		return err
 	}
-
-	log.Printf("[agent] flux ouvert vers %s", cfg.ServerAddr)
-	backoff.Reset()
+	log.Printf("[metrics] flux ouvert vers %s", cfg.ServerAddr)
 
 	ticker := time.NewTicker(cfg.CollectInterval)
 	defer ticker.Stop()
@@ -103,22 +116,13 @@ func runStreamSession(ctx context.Context, cfg config, collector *metrics.Collec
 	for {
 		select {
 		case <-ctx.Done():
-			// Clôture propre : on prévient le serveur et on attend sa réponse.
-			resp, closeErr := stream.CloseAndRecv()
-			if closeErr != nil && !errors.Is(closeErr, io.EOF) {
-				log.Printf("[agent] erreur à la clôture : %v", closeErr)
-			} else if resp != nil {
-				log.Printf("[agent] serveur a répondu : %s", resp.GetStatus())
-			}
-			return ctx.Err()
-
+			return closeStream(stream)
 		case <-ticker.C:
 			snap, err := collector.Collect(ctx)
 			if err != nil {
-				log.Printf("[agent] collecte échouée : %v", err)
+				log.Printf("[metrics] collecte échouée : %v", err)
 				continue
 			}
-
 			report := &pb.MetricReport{
 				NodeId:    cfg.NodeID,
 				CpuUsage:  snap.CPUUsage,
@@ -126,18 +130,97 @@ func runStreamSession(ctx context.Context, cfg config, collector *metrics.Collec
 				DiskUsage: snap.DiskUsage,
 				Timestamp: timestamppb.New(snap.CollectedAt),
 			}
-
 			if err := stream.Send(report); err != nil {
-				return err // déclenche une reconnexion avec backoff
+				return err
 			}
-
-			log.Printf("[agent] envoyé — cpu=%.1f%% ram=%.1f%% disk=%.1f%%",
+			log.Printf("[metrics] envoyé — cpu=%.1f%% ram=%.1f%% disk=%.1f%%",
 				report.CpuUsage, report.RamUsage, report.DiskUsage)
 		}
 	}
 }
 
+// ── Session Docker ────────────────────────────────────────────────────────────
+
+func runDockerSession(ctx context.Context, cfg config, collector *dockercollector.Collector) error {
+	conn, err := dialServer(cfg.ServerAddr)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+
+	stream, err := pb.NewMonitoringServiceClient(conn).StreamDockerStatus(ctx)
+	if err != nil {
+		return err
+	}
+	log.Printf("[docker] flux ouvert vers %s", cfg.ServerAddr)
+
+	ticker := time.NewTicker(cfg.CollectInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return closeDockerStream(stream)
+		case <-ticker.C:
+			snapshots, err := collector.Collect(ctx)
+			if err != nil {
+				log.Printf("[docker] collecte échouée : %v", err)
+				continue
+			}
+
+			containers := make([]*pb.ContainerInfo, 0, len(snapshots))
+			for _, s := range snapshots {
+				containers = append(containers, &pb.ContainerInfo{
+					Id:         s.ID,
+					Name:       s.Name,
+					Image:      s.Image,
+					State:      s.State,
+					CpuPercent: s.CPUPercent,
+					MemUsageMb: s.MemUsageMB,
+					MemLimitMb: s.MemLimitMB,
+				})
+			}
+
+			report := &pb.DockerReport{
+				NodeId:     cfg.NodeID,
+				Containers: containers,
+				Timestamp:  timestamppb.Now(),
+			}
+			if err := stream.Send(report); err != nil {
+				return err
+			}
+			log.Printf("[docker] envoyé — %d conteneurs", len(containers))
+		}
+	}
+}
+
 // ── helpers ──────────────────────────────────────────────────────────────────
+
+func dialServer(addr string) (*grpc.ClientConn, error) {
+	return grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+}
+
+func closeStream(stream pb.MonitoringService_StreamMetricsClient) error {
+	resp, err := stream.CloseAndRecv()
+	if err != nil && !errors.Is(err, io.EOF) {
+		return err
+	}
+	if resp != nil {
+		log.Printf("[metrics] serveur a répondu : %s", resp.GetStatus())
+	}
+	return context.Canceled
+}
+
+func closeDockerStream(stream pb.MonitoringService_StreamDockerStatusClient) error {
+	resp, err := stream.CloseAndRecv()
+	if err != nil && !errors.Is(err, io.EOF) {
+		return err
+	}
+	if resp != nil {
+		log.Printf("[docker] serveur a répondu : %s", resp.GetStatus())
+	}
+	return context.Canceled
+}
 
 func envOrDefault(key, def string) string {
 	if v := os.Getenv(key); v != "" {

@@ -14,14 +14,14 @@ from __future__ import annotations
 import asyncio
 import logging
 from contextlib import asynccontextmanager
-from typing import AsyncGenerator
+from typing import Any, AsyncGenerator
 
 import grpc.aio
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
 
-from server import database
+from server import database, store
 from server.config import get_settings
 from server.grpc_server import MonitoringServicer
 from server.pb import monitor_pb2_grpc
@@ -102,6 +102,36 @@ async def health() -> JSONResponse:
             },
         },
     )
+
+
+@app.get(
+    "/nodes/{node_id}/containers",
+    summary="État des conteneurs Docker d'un nœud",
+    response_description="Snapshot Docker le plus récent reçu pour ce nœud.",
+)
+async def get_node_containers(node_id: str) -> dict[str, Any]:
+    """
+    Retourne le dernier snapshot Docker reçu pour le nœud `node_id`.
+
+    - **node_id** : identifiant du nœud (valeur de `CLOUDVIGIL_NODE_ID` côté agent)
+
+    Retourne HTTP 404 si aucun rapport Docker n'a encore été reçu pour ce nœud
+    (Docker non installé sur l'agent, ou agent non encore connecté).
+    """
+    data = store.get_containers(node_id)
+    if data is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Nœud '{node_id}' inconnu ou Docker non disponible sur cet agent.",
+        )
+    return data
+
+
+@app.get("/nodes", summary="Liste des nœuds avec données Docker")
+async def list_nodes() -> dict[str, Any]:
+    """Retourne la liste de tous les nœuds ayant envoyé au moins un rapport Docker."""
+    nodes = store.list_nodes()
+    return {"nodes": nodes, "count": len(nodes)}
 
 
 @app.get("/", include_in_schema=False)

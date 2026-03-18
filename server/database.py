@@ -55,6 +55,44 @@ async def health_check() -> bool:
         return False
 
 
+async def write_container_metric(
+    node_id: str,
+    container_id: str,
+    container_name: str,
+    image: str,
+    cpu_percent: float,
+    mem_usage_mb: float,
+    mem_limit_mb: float,
+    timestamp: datetime,
+) -> None:
+    """Écrit un Point de métriques Docker dans le bucket InfluxDB configuré."""
+    if _write_api is None:
+        raise RuntimeError("La base de données n'est pas initialisée.")
+
+    settings = get_settings()
+
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.replace(tzinfo=timezone.utc)
+
+    point = (
+        Point("docker_containers")
+        .tag("node_id", node_id)
+        .tag("container_id", container_id)
+        .tag("container_name", container_name)
+        .tag("image", image)
+        .field("cpu_percent", float(cpu_percent))
+        .field("mem_usage_mb", float(mem_usage_mb))
+        .field("mem_limit_mb", float(mem_limit_mb))
+        .time(timestamp)
+    )
+
+    await _write_api.write(bucket=settings.influxdb_bucket, record=point)
+    log.debug(
+        "Point Docker écrit — node=%s container=%s cpu=%.1f%%",
+        node_id, container_name, cpu_percent,
+    )
+
+
 async def write_metric(
     node_id: str,
     cpu_usage: float,

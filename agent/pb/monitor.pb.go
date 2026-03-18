@@ -118,6 +118,81 @@ func (x *StreamRequest) GetIntervalSeconds() uint32 {
 	return 0
 }
 
+// ContainerInfo représente l'état et la consommation de ressources d'un conteneur Docker.
+type ContainerInfo struct {
+	state         protoimpl.MessageState
+	sizeCache     protoimpl.SizeCache
+	unknownFields protoimpl.UnknownFields
+
+	Id         string  `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	Name       string  `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
+	Image      string  `protobuf:"bytes,3,opt,name=image,proto3" json:"image,omitempty"`
+	State      string  `protobuf:"bytes,4,opt,name=state,proto3" json:"state,omitempty"`
+	CpuPercent float32 `protobuf:"fixed32,5,opt,name=cpu_percent,json=cpuPercent,proto3" json:"cpu_percent,omitempty"`
+	MemUsageMb float32 `protobuf:"fixed32,6,opt,name=mem_usage_mb,json=memUsageMb,proto3" json:"mem_usage_mb,omitempty"`
+	MemLimitMb float32 `protobuf:"fixed32,7,opt,name=mem_limit_mb,json=memLimitMb,proto3" json:"mem_limit_mb,omitempty"`
+}
+
+func (x *ContainerInfo) Reset()        { *x = ContainerInfo{} }
+func (x *ContainerInfo) String() string { return protoimpl.X.MessageStringOf(x) }
+func (x *ContainerInfo) ProtoMessage() {}
+
+func (x *ContainerInfo) ProtoReflect() protoreflect.Message {
+	mi := &file_monitor_proto_msgTypes[3]
+	if protoimpl.UnsafeEnabled && x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+func (x *ContainerInfo) GetId() string         { if x != nil { return x.Id }; return "" }
+func (x *ContainerInfo) GetName() string        { if x != nil { return x.Name }; return "" }
+func (x *ContainerInfo) GetImage() string       { if x != nil { return x.Image }; return "" }
+func (x *ContainerInfo) GetState() string       { if x != nil { return x.State }; return "" }
+func (x *ContainerInfo) GetCpuPercent() float32 { if x != nil { return x.CpuPercent }; return 0 }
+func (x *ContainerInfo) GetMemUsageMb() float32 { if x != nil { return x.MemUsageMb }; return 0 }
+func (x *ContainerInfo) GetMemLimitMb() float32 { if x != nil { return x.MemLimitMb }; return 0 }
+
+// DockerReport contient le snapshot Docker d'un nœud à un instant donné.
+type DockerReport struct {
+	state         protoimpl.MessageState
+	sizeCache     protoimpl.SizeCache
+	unknownFields protoimpl.UnknownFields
+
+	NodeId     string                 `protobuf:"bytes,1,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`
+	Containers []*ContainerInfo       `protobuf:"bytes,2,rep,name=containers,proto3" json:"containers,omitempty"`
+	Timestamp  *timestamppb.Timestamp `protobuf:"bytes,3,opt,name=timestamp,proto3" json:"timestamp,omitempty"`
+}
+
+func (x *DockerReport) Reset()        { *x = DockerReport{} }
+func (x *DockerReport) String() string { return protoimpl.X.MessageStringOf(x) }
+func (x *DockerReport) ProtoMessage() {}
+
+func (x *DockerReport) ProtoReflect() protoreflect.Message {
+	mi := &file_monitor_proto_msgTypes[4]
+	if protoimpl.UnsafeEnabled && x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+func (x *DockerReport) GetNodeId() string               { if x != nil { return x.NodeId }; return "" }
+func (x *DockerReport) GetContainers() []*ContainerInfo { if x != nil { return x.Containers }; return nil }
+func (x *DockerReport) GetTimestamp() *timestamppb.Timestamp {
+	if x != nil {
+		return x.Timestamp
+	}
+	return nil
+}
+
 // StreamResponse est renvoyé par le serveur à la clôture du flux.
 type StreamResponse struct {
 	state         protoimpl.MessageState
@@ -150,6 +225,6 @@ func (x *StreamResponse) GetStatus() string {
 	return ""
 }
 
-var file_monitor_proto_msgTypes = make([]protoimpl.MessageInfo, 3)
+var file_monitor_proto_msgTypes = make([]protoimpl.MessageInfo, 5)
 
 var File_monitor_proto protoreflect.FileDescriptor

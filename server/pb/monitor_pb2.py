@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 # Stubs pré-générés. Exécuter `make proto` pour régénérer depuis proto/monitor.proto.
 #
-# Ce fichier construit le FileDescriptorProto programmatiquement (sans bytes raw)
-# afin d'éviter toute dérive manuelle entre le proto source et les stubs.
+# Le FileDescriptorProto est construit programmatiquement (sans bytes raw)
+# pour rester en phase avec le proto source sans nécessiter protoc au démarrage.
 
 from __future__ import annotations
 
@@ -19,12 +19,13 @@ _runtime_version.ValidateProtobufRuntimeVersion(
 
 _sym_db = _symbol_database.Default()
 
-# TYPE_* et LABEL_* constants (wire format protobuf)
-_STRING  = 9
-_FLOAT   = 2
-_UINT32  = 13
-_MESSAGE = 11
+# ── Constantes wire-format protobuf ───────────────────────────────────────────
+_STRING   = 9
+_FLOAT    = 2
+_UINT32   = 13
+_MESSAGE  = 11
 _OPTIONAL = 1
+_REPEATED = 3
 
 
 def _make_file_descriptor_bytes() -> bytes:
@@ -39,12 +40,12 @@ def _make_file_descriptor_bytes() -> bytes:
         _descriptor_pb2.FileOptions(go_package="github.com/cloudvigil/agent/pb;pb")
     )
 
-    def _f(msg, name, number, ftype, json_name="", type_name=""):
+    def _f(msg, name, number, ftype, label=_OPTIONAL, json_name="", type_name=""):
         field = msg.field.add()
         field.name = name
         field.number = number
         field.type = ftype
-        field.label = _OPTIONAL
+        field.label = label
         field.json_name = json_name or name
         if type_name:
             field.type_name = type_name
@@ -70,15 +71,43 @@ def _make_file_descriptor_bytes() -> bytes:
     resp.name = "StreamResponse"
     _f(resp, "status", 1, _STRING, json_name="status")
 
+    # ── ContainerInfo ─────────────────────────────────────────────────────────
+    ci = fdp.message_type.add()
+    ci.name = "ContainerInfo"
+    _f(ci, "id",           1, _STRING, json_name="id")
+    _f(ci, "name",         2, _STRING, json_name="name")
+    _f(ci, "image",        3, _STRING, json_name="image")
+    _f(ci, "state",        4, _STRING, json_name="state")
+    _f(ci, "cpu_percent",  5, _FLOAT,  json_name="cpuPercent")
+    _f(ci, "mem_usage_mb", 6, _FLOAT,  json_name="memUsageMb")
+    _f(ci, "mem_limit_mb", 7, _FLOAT,  json_name="memLimitMb")
+
+    # ── DockerReport ──────────────────────────────────────────────────────────
+    dr = fdp.message_type.add()
+    dr.name = "DockerReport"
+    _f(dr, "node_id",    1, _STRING,  json_name="nodeId")
+    _f(dr, "containers", 2, _MESSAGE, label=_REPEATED, json_name="containers",
+       type_name=".monitor.ContainerInfo")
+    _f(dr, "timestamp",  3, _MESSAGE, json_name="timestamp",
+       type_name=".google.protobuf.Timestamp")
+
     # ── MonitoringService ─────────────────────────────────────────────────────
     svc = fdp.service.add()
     svc.name = "MonitoringService"
-    method = svc.method.add()
-    method.name = "StreamMetrics"
-    method.input_type = ".monitor.MetricReport"
-    method.output_type = ".monitor.StreamResponse"
-    method.client_streaming = True
-    method.server_streaming = False
+
+    m1 = svc.method.add()
+    m1.name = "StreamMetrics"
+    m1.input_type = ".monitor.MetricReport"
+    m1.output_type = ".monitor.StreamResponse"
+    m1.client_streaming = True
+    m1.server_streaming = False
+
+    m2 = svc.method.add()
+    m2.name = "StreamDockerStatus"
+    m2.input_type = ".monitor.DockerReport"
+    m2.output_type = ".monitor.StreamResponse"
+    m2.client_streaming = True
+    m2.server_streaming = False
 
     return fdp.SerializeToString()
 
