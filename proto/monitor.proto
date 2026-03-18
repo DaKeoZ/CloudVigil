@@ -1,0 +1,28 @@
+syntax = "proto3";
+
+package monitor;
+
+option go_package = "github.com/cloudvigil/agent/pb;pb";
+
+import "google/protobuf/timestamp.proto";
+
+// MetricReport contient les métriques système collectées par un agent.
+message MetricReport {
+  string node_id    = 1;
+  float  cpu_usage  = 2; // Pourcentage d'utilisation CPU (0.0 – 100.0)
+  float  ram_usage  = 3; // Pourcentage d'utilisation RAM (0.0 – 100.0)
+  float  disk_usage = 4; // Pourcentage d'utilisation disque (0.0 – 100.0)
+  google.protobuf.Timestamp timestamp = 5;
+}
+
+// StreamRequest est envoyé par l'agent pour initier le flux.
+message StreamRequest {
+  string node_id          = 1;
+  uint32 interval_seconds = 2; // Intervalle de collecte souhaité
+}
+
+// MonitoringService expose les méthodes de collecte de métriques en temps réel.
+service MonitoringService {
+  // StreamMetrics ouvre un flux server-side : l'agent envoie des rapports en continu.
+  rpc StreamMetrics(StreamRequest) returns (stream MetricReport);
+}

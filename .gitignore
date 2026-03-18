@@ -1,0 +1,33 @@
+# Go
+agent/bin/
+agent/vendor/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+go.sum
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+server/.venv/
+.venv/
+*.pyc
+
+# Éditeurs
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Artefacts de build locaux
+*.log
