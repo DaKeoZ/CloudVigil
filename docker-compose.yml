@@ -1,3 +1,25 @@
+# ==============================================================================
+# CloudVigil — Stack complète
+# ==============================================================================
+# Services :
+#   influxdb   — Base de données time-series
+#   server     — Serveur FastAPI + gRPC (mTLS)
+#   frontend   — Dashboard Next.js
+#   nginx      — Reverse proxy HTTPS (TLS termination + rate limiting)
+#
+# Démarrage rapide :
+#   1. bash scripts/gen-certs.sh          # Génère les certificats TLS
+#   2. docker compose up -d               # Lance toute la stack
+#   3. Ouvrir https://localhost           # Dashboard CloudVigil
+#
+# Variables d'environnement sensibles (à définir dans un fichier .env) :
+#   CLOUDVIGIL_JWT_SECRET     — Clé secrète JWT (min. 32 chars)
+#   CLOUDVIGIL_API_USERNAME   — Identifiant administrateur
+#   CLOUDVIGIL_API_PASSWORD   — Mot de passe administrateur
+#   INFLUXDB_ADMIN_PASSWORD   — Mot de passe InfluxDB
+#   INFLUXDB_ADMIN_TOKEN      — Token InfluxDB
+# ==============================================================================
+
 services:
 
   # ── InfluxDB v2 ─────────────────────────────────────────────────────────────
@@ -5,51 +27,136 @@ services:
     image: influxdb:2.7
     container_name: cloudvigil-influxdb
     restart: unless-stopped
-    ports:
-      - "8086:8086"
-    environment:
-      # Mode auto-setup : crée l'utilisateur, l'org, le bucket et le token au premier démarrage.
-      DOCKER_INFLUXDB_INIT_MODE:         setup
-      DOCKER_INFLUXDB_INIT_USERNAME:     admin
-      DOCKER_INFLUXDB_INIT_PASSWORD:     cloudvigil-admin-2024
-      DOCKER_INFLUXDB_INIT_ORG:          cloudvigil
-      DOCKER_INFLUXDB_INIT_BUCKET:       system_metrics
-      DOCKER_INFLUXDB_INIT_RETENTION:    30d
-      DOCKER_INFLUXDB_INIT_ADMIN_TOKEN:  cloudvigil-dev-token
+    networks:
+      - backend
     volumes:
       - influxdb_data:/var/lib/influxdb2
       - influxdb_config:/etc/influxdb2
+    environment:
+      DOCKER_INFLUXDB_INIT_MODE:         setup
+      DOCKER_INFLUXDB_INIT_USERNAME:     admin
+      DOCKER_INFLUXDB_INIT_PASSWORD:     ${INFLUXDB_ADMIN_PASSWORD:-cloudvigil-admin-2024}
+      DOCKER_INFLUXDB_INIT_ORG:          cloudvigil
+      DOCKER_INFLUXDB_INIT_BUCKET:       system_metrics
+      DOCKER_INFLUXDB_INIT_RETENTION:    30d
+      DOCKER_INFLUXDB_INIT_ADMIN_TOKEN:  ${INFLUXDB_ADMIN_TOKEN:-cloudvigil-dev-token}
     healthcheck:
       test: ["CMD", "influx", "ping"]
       interval: 10s
       timeout: 5s
       retries: 5
       start_period: 20s
+    # InfluxDB n'est pas exposé publiquement — accessible uniquement par `server`
+    expose:
+      - "8086"
 
-  # ── CloudVigil Server (Python / FastAPI + gRPC) ─────────────────────────────
+  # ── CloudVigil Server (FastAPI + gRPC) ──────────────────────────────────────
   server:
     build:
       context: .
       dockerfile: server/Dockerfile
     container_name: cloudvigil-server
     restart: unless-stopped
-    ports:
-      - "8000:8000"   # API HTTP / FastAPI
-      - "50051:50051" # gRPC
+    networks:
+      - backend
+      - frontend
+    volumes:
+      # Certificats TLS (lecture seule)
+      - ./certs:/app/certs:ro
+      # Fichier de configuration des alertes
+      - ./config:/app/config:ro
     environment:
+      # ── InfluxDB ────────────────────────────────────────────────────────────
       CLOUDVIGIL_INFLUXDB_URL:    http://influxdb:8086
-      CLOUDVIGIL_INFLUXDB_TOKEN:  cloudvigil-dev-token
+      CLOUDVIGIL_INFLUXDB_TOKEN:  ${INFLUXDB_ADMIN_TOKEN:-cloudvigil-dev-token}
       CLOUDVIGIL_INFLUXDB_ORG:    cloudvigil
       CLOUDVIGIL_INFLUXDB_BUCKET: system_metrics
+      # ── gRPC ────────────────────────────────────────────────────────────────
       CLOUDVIGIL_GRPC_LISTEN:     "[::]:50051"
+      # ── mTLS (désactiver en commentant les 3 lignes suivantes) ─────────────
+      CLOUDVIGIL_TLS_CA_CERT:     /app/certs/ca/ca.crt
+      CLOUDVIGIL_TLS_SERVER_CERT: /app/certs/server/server.crt
+      CLOUDVIGIL_TLS_SERVER_KEY:  /app/certs/server/server.key
+      # ── JWT ─────────────────────────────────────────────────────────────────
+      CLOUDVIGIL_JWT_SECRET:      ${CLOUDVIGIL_JWT_SECRET:-changeme-use-a-long-random-secret-in-production}
+      CLOUDVIGIL_API_USERNAME:    ${CLOUDVIGIL_API_USERNAME:-admin}
+      CLOUDVIGIL_API_PASSWORD:    ${CLOUDVIGIL_API_PASSWORD:-cloudvigil}
+      # ── Alertes ─────────────────────────────────────────────────────────────
+      CLOUDVIGIL_ALERTS_CONFIG_PATH: /app/config/alerts.yaml
+    ports:
+      # gRPC : exposé directement (mTLS) pour les agents distants
+      - "50051:50051"
+    # L'API HTTP (8000) n'est PAS exposée publiquement — uniquement via Nginx
+    expose:
+      - "8000"
     depends_on:
       influxdb:
         condition: service_healthy
-    profiles:
-      # Activer avec : docker compose --profile full up
-      # Sinon, lancer le serveur manuellement avec `make run-server`
-      - full
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
 
+  # ── CloudVigil Frontend (Next.js) ───────────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        # Derrière Nginx, l'API est disponible via /api (même origine → pas de CORS)
+        NEXT_PUBLIC_API_URL: /api
+    container_name: cloudvigil-frontend
+    restart: unless-stopped
+    networks:
+      - frontend
+    expose:
+      - "3000"
+    depends_on:
+      server:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+
+  # ── Nginx Reverse Proxy ─────────────────────────────────────────────────────
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: cloudvigil-nginx
+    restart: unless-stopped
+    networks:
+      - frontend
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      # Certificat HTTPS auto-signé (généré par scripts/gen-certs.sh)
+      - ./certs/nginx:/etc/nginx/certs:ro
+    ports:
+      - "80:80"    # HTTP → redirection HTTPS
+      - "443:443"  # HTTPS (TLS termination)
+    depends_on:
+      - frontend
+      - server
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost/nginx-health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Réseaux
+# ══════════════════════════════════════════════════════════════════════════════
+networks:
+  backend:
+    # Réseau interne : server ↔ influxdb (pas d'accès depuis nginx/frontend)
+    name: cloudvigil_backend
+    internal: true
+  frontend:
+    # Réseau externe : nginx ↔ server ↔ frontend
+    name: cloudvigil_frontend
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Volumes persistants
+# ══════════════════════════════════════════════════════════════════════════════
 volumes:
   influxdb_data:
     name: cloudvigil_influxdb_data

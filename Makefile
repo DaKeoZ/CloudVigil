@@ -25,9 +25,16 @@ VENV        := server/.venv
 PYTHON      := $(VENV)/bin/python
 PIP         := $(VENV)/bin/pip
 
-.PHONY: all proto deps deps-go deps-py run-server run-agent build lint clean help
+.PHONY: all proto deps deps-go deps-py run-server run-agent build lint clean gen-certs help
 
 all: deps proto build
+
+# ------------------------------------------------------------------------------
+# Génération des certificats TLS / mTLS
+# ------------------------------------------------------------------------------
+gen-certs:
+	@echo "==> Génération des certificats TLS / mTLS..."
+	bash scripts/gen-certs.sh
 
 # ------------------------------------------------------------------------------
 # Génération des stubs Protocol Buffers
@@ -147,4 +154,5 @@ help:
 	@echo "  make run-agent   Compile et démarre l'agent Go"
 	@echo "  make lint        Analyse statique (Go vet + Python)"
 	@echo "  make clean       Supprime les artefacts générés"
+	@echo "  make gen-certs   Génère les certificats TLS/mTLS dans certs/"
 	@echo ""

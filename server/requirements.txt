@@ -16,6 +16,10 @@ influxdb-client[async]==1.43.0
 # ── Configuration ─────────────────────────────────────────────────────────────
 pydantic-settings==2.2.1
 
+# ── JWT Authentification ───────────────────────────────────────────────────────
+# [cryptography] active le backend Python-Cryptography (ECDSA, RSA, etc.)
+python-jose[cryptography]==3.3.0
+
 # ── Alertes ────────────────────────────────────────────────────────────────────
 # Lecture du fichier config/alerts.yaml
 pyyaml==6.0.1

@@ -29,9 +29,23 @@ class Settings(BaseSettings):
     influxdb_bucket: str = "system_metrics"
 
     # ── Alertes ────────────────────────────────────────────────────────────────
-    # Chemin vers le fichier YAML de configuration des alertes.
-    # Relatif au répertoire de travail courant (racine du projet).
     alerts_config_path: str = "config/alerts.yaml"
+
+    # ── TLS / mTLS gRPC ────────────────────────────────────────────────────────
+    # Laisser vide pour désactiver mTLS (mode développement non sécurisé).
+    tls_ca_cert:     str = ""   # CLOUDVIGIL_TLS_CA_CERT     → certs/ca/ca.crt
+    tls_server_cert: str = ""   # CLOUDVIGIL_TLS_SERVER_CERT → certs/server/server.crt
+    tls_server_key:  str = ""   # CLOUDVIGIL_TLS_SERVER_KEY  → certs/server/server.key
+
+    # ── JWT API ────────────────────────────────────────────────────────────────
+    # IMPÉRATIF : changer jwt_secret en production (min. 32 caractères aléatoires).
+    jwt_secret:         str = "changeme-use-a-long-random-secret-in-production"
+    jwt_algorithm:      str = "HS256"
+    jwt_expire_minutes: int = 480   # 8 heures
+
+    # Identifiants de l'administrateur (surcharger via variables d'env en prod).
+    api_username: str = "admin"
+    api_password: str = "cloudvigil"
 
 
 @lru_cache(maxsize=1)

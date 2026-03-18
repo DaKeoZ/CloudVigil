@@ -2,7 +2,10 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"os"
@@ -16,6 +19,7 @@ import (
 	"github.com/cloudvigil/agent/internal/metrics"
 	"github.com/cloudvigil/agent/pb"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -26,6 +30,12 @@ type config struct {
 	NodeID          string
 	CollectInterval time.Duration
 	DiskPath        string
+
+	// mTLS — si TLSCACert est vide, la connexion est non chiffrée (dev uniquement).
+	TLSCACert     string // CLOUDVIGIL_TLS_CA_CERT   → certs/ca/ca.crt
+	TLSClientCert string // CLOUDVIGIL_TLS_AGENT_CERT → certs/agent/agent.crt
+	TLSClientKey  string // CLOUDVIGIL_TLS_AGENT_KEY  → certs/agent/agent.key
+	TLSServerName string // CLOUDVIGIL_TLS_SERVER_NAME → "cloudvigil-server"
 }
 
 func loadConfig() config {
@@ -42,6 +52,10 @@ func loadConfig() config {
 		NodeID:          envOrDefault("CLOUDVIGIL_NODE_ID", mustHostname()),
 		CollectInterval: envDuration("CLOUDVIGIL_INTERVAL", 2*time.Second),
 		DiskPath:        diskPath,
+		TLSCACert:       os.Getenv("CLOUDVIGIL_TLS_CA_CERT"),
+		TLSClientCert:   os.Getenv("CLOUDVIGIL_TLS_AGENT_CERT"),
+		TLSClientKey:    os.Getenv("CLOUDVIGIL_TLS_AGENT_KEY"),
+		TLSServerName:   envOrDefault("CLOUDVIGIL_TLS_SERVER_NAME", "cloudvigil-server"),
 	}
 }
 
@@ -98,7 +112,7 @@ func runWithBackoff(ctx context.Context, label string, fn func(context.Context) 
 // ── Session métriques système ─────────────────────────────────────────────────
 
 func runMetricsSession(ctx context.Context, cfg config, collector *metrics.Collector) error {
-	conn, err := dialServer(cfg.ServerAddr)
+	conn, err := dialServer(cfg)
 	if err != nil {
 		return err
 	}
@@ -142,7 +156,7 @@ func runMetricsSession(ctx context.Context, cfg config, collector *metrics.Colle
 // ── Session Docker ────────────────────────────────────────────────────────────
 
 func runDockerSession(ctx context.Context, cfg config, collector *dockercollector.Collector) error {
-	conn, err := dialServer(cfg.ServerAddr)
+	conn, err := dialServer(cfg)
 	if err != nil {
 		return err
 	}
@@ -196,8 +210,50 @@ func runDockerSession(ctx context.Context, cfg config, collector *dockercollecto
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
-func dialServer(addr string) (*grpc.ClientConn, error) {
-	return grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+// dialServer ouvre une connexion gRPC vers le serveur.
+// Si les variables TLS sont renseignées, active le mTLS ; sinon utilise
+// une connexion non chiffrée (pratique pour le développement local).
+func dialServer(cfg config) (*grpc.ClientConn, error) {
+	opt, err := buildDialOption(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("TLS: %w", err)
+	}
+	return grpc.NewClient(cfg.ServerAddr, opt)
+}
+
+// buildDialOption construit l'option de transport gRPC (mTLS ou insecure).
+func buildDialOption(cfg config) (grpc.DialOption, error) {
+	if cfg.TLSCACert == "" {
+		log.Println("[tls] ⚠️  Connexion non chiffrée — définissez CLOUDVIGIL_TLS_CA_CERT pour activer mTLS")
+		return grpc.WithTransportCredentials(insecure.NewCredentials()), nil
+	}
+
+	// Charger le certificat de l'autorité de certification (CA)
+	caPEM, err := os.ReadFile(cfg.TLSCACert)
+	if err != nil {
+		return nil, fmt.Errorf("lecture CA cert %q: %w", cfg.TLSCACert, err)
+	}
+	certPool := x509.NewCertPool()
+	if !certPool.AppendCertsFromPEM(caPEM) {
+		return nil, errors.New("impossible de parser le certificat CA")
+	}
+
+	// Charger le certificat client + clé privée (mTLS)
+	clientCert, err := tls.LoadX509KeyPair(cfg.TLSClientCert, cfg.TLSClientKey)
+	if err != nil {
+		return nil, fmt.Errorf("cert/clé agent %q/%q: %w", cfg.TLSClientCert, cfg.TLSClientKey, err)
+	}
+
+	tlsCfg := &tls.Config{
+		Certificates: []tls.Certificate{clientCert},
+		RootCAs:      certPool,
+		ServerName:   cfg.TLSServerName, // SNI — doit correspondre au CN/SAN du serveur
+		MinVersion:   tls.VersionTLS13,
+	}
+
+	log.Printf("[tls] mTLS activé — CA=%s cert=%s serveur=%s",
+		cfg.TLSCACert, cfg.TLSClientCert, cfg.TLSServerName)
+	return grpc.WithTransportCredentials(credentials.NewTLS(tlsCfg)), nil
 }
 
 func closeStream(stream pb.MonitoringService_StreamMetricsClient) error {

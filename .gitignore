@@ -35,5 +35,15 @@ frontend/.env.local
 .DS_Store
 Thumbs.db
 
+# Certificats TLS (générés localement, ne jamais committer les clés privées !)
+certs/ca/
+certs/server/
+certs/agent/
+certs/nginx/
+
+# Fichier d'environnement local (contient les secrets)
+.env
+.env.local
+
 # Artefacts de build locaux
 *.log

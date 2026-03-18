@@ -12,21 +12,23 @@ Démarrage :
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, AsyncGenerator
+from typing import Annotated, Any, AsyncGenerator
 
+import grpc
 import grpc.aio
 import uvicorn
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.security import OAuth2PasswordRequestForm
 
 from server import database, store
 from server.alerts import AlertEngine, load_alert_config
-from server.config import get_settings
+from server.auth import CurrentUser, Token, create_access_token, verify_credentials
+from server.config import Settings, get_settings
 from server.grpc_server import MonitoringServicer
 from server.pb import monitor_pb2_grpc
 
@@ -35,6 +37,32 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s — %(message)s",
 )
 log = logging.getLogger(__name__)
+
+
+# ── Helpers TLS ───────────────────────────────────────────────────────────────
+
+def _build_grpc_credentials(settings: Settings) -> grpc.ServerCredentials | None:
+    """
+    Construit les credentials mTLS pour le serveur gRPC.
+    Retourne None si les chemins de certificats ne sont pas configurés
+    (mode développement non sécurisé).
+    """
+    if not settings.tls_ca_cert:
+        return None
+
+    try:
+        ca_cert     = Path(settings.tls_ca_cert).read_bytes()
+        server_cert = Path(settings.tls_server_cert).read_bytes()
+        server_key  = Path(settings.tls_server_key).read_bytes()
+    except OSError as exc:
+        log.error("[tls] Impossible de lire les certificats TLS : %s — mTLS désactivé.", exc)
+        return None
+
+    return grpc.ssl_server_credentials(
+        private_key_certificate_chain_pairs=[(server_key, server_cert)],
+        root_certificates=ca_cert,
+        require_client_auth=True,   # mTLS strict : le client DOIT présenter son certificat
+    )
 
 
 # ── Lifespan ──────────────────────────────────────────────────────────────────
@@ -52,9 +80,16 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     monitor_pb2_grpc.add_MonitoringServiceServicer_to_server(
         MonitoringServicer(), grpc_server
     )
-    grpc_server.add_insecure_port(settings.grpc_listen)
+
+    tls_creds = _build_grpc_credentials(settings)
+    if tls_creds:
+        grpc_server.add_secure_port(settings.grpc_listen, tls_creds)
+        log.info("Serveur gRPC démarré sur %s (mTLS activé)", settings.grpc_listen)
+    else:
+        grpc_server.add_insecure_port(settings.grpc_listen)
+        log.warning("Serveur gRPC démarré sur %s (⚠️  non chiffré)", settings.grpc_listen)
+
     await grpc_server.start()
-    log.info("Serveur gRPC démarré sur %s", settings.grpc_listen)
 
     # 3. Charger la configuration des alertes et démarrer le moteur
     alert_config = load_alert_config(Path(settings.alerts_config_path))
@@ -100,6 +135,40 @@ app.add_middleware(
 
 # ── Routes ────────────────────────────────────────────────────────────────────
 
+# ── Authentification (publique) ───────────────────────────────────────────────
+
+@app.post(
+    "/auth/token",
+    response_model=Token,
+    summary="Obtenir un token JWT (OAuth2 Password Flow)",
+    tags=["auth"],
+)
+async def login(
+    form_data: Annotated[OAuth2PasswordRequestForm, Depends()],
+) -> Token:
+    """
+    Authentification par identifiant / mot de passe.
+
+    Retourne un Bearer JWT à inclure dans le header `Authorization: Bearer <token>`
+    pour accéder aux endpoints protégés.
+
+    Configurer les identifiants via les variables d'environnement :
+    `CLOUDVIGIL_API_USERNAME` et `CLOUDVIGIL_API_PASSWORD`.
+    """
+    if not verify_credentials(form_data.username, form_data.password):
+        log.warning("[auth] Tentative de connexion échouée pour '%s'", form_data.username)
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Identifiant ou mot de passe incorrect.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    token, expires_in = create_access_token(form_data.username)
+    log.info("[auth] Token JWT délivré pour '%s' (expire dans %ds)", form_data.username, expires_in)
+    return Token(access_token=token, expires_in=expires_in)
+
+
+# ── Healthcheck (public) ──────────────────────────────────────────────────────
+
 @app.get("/health", summary="Healthcheck global")
 async def health() -> JSONResponse:
     """
@@ -133,7 +202,7 @@ async def health() -> JSONResponse:
     summary="État des conteneurs Docker d'un nœud",
     response_description="Snapshot Docker le plus récent reçu pour ce nœud.",
 )
-async def get_node_containers(node_id: str) -> dict[str, Any]:
+async def get_node_containers(node_id: str, _: CurrentUser) -> dict[str, Any]:
     """
     Retourne le dernier snapshot Docker reçu pour le nœud `node_id`.
 
@@ -152,7 +221,7 @@ async def get_node_containers(node_id: str) -> dict[str, Any]:
 
 
 @app.get("/dashboard", summary="Vue d'ensemble de tous les nœuds monitorés")
-async def get_dashboard() -> dict[str, Any]:
+async def get_dashboard(_: CurrentUser) -> dict[str, Any]:
     """
     Endpoint principal du frontend CloudVigil.
     Retourne pour chaque nœud connu :
@@ -192,7 +261,7 @@ async def get_dashboard() -> dict[str, Any]:
 
 
 @app.get("/nodes", summary="Liste des nœuds avec données Docker")
-async def list_nodes() -> dict[str, Any]:
+async def list_nodes(_: CurrentUser) -> dict[str, Any]:
     """Retourne la liste de tous les nœuds ayant envoyé au moins un rapport Docker."""
     nodes = store.list_nodes()
     return {"nodes": nodes, "count": len(nodes)}
@@ -201,7 +270,7 @@ async def list_nodes() -> dict[str, Any]:
 # ── Alertes ───────────────────────────────────────────────────────────────────
 
 @app.get("/alerts/status", summary="État du moteur d'alertes")
-async def alerts_status() -> dict[str, Any]:
+async def alerts_status(_: CurrentUser) -> dict[str, Any]:
     """
     Retourne l'état complet du moteur d'alertes :
     - Règles configurées et leur sévérité
@@ -216,7 +285,7 @@ async def alerts_status() -> dict[str, Any]:
 
 
 @app.post("/alerts/test", summary="Envoi d'une notification de test sur les webhooks")
-async def alerts_test() -> dict[str, Any]:
+async def alerts_test(_: CurrentUser) -> dict[str, Any]:
     """
     Envoie un message de test sur tous les webhooks actifs (Slack et/ou Discord).
     Utile pour vérifier que les URLs de webhook sont correctement configurées.
@@ -234,7 +303,7 @@ async def alerts_test() -> dict[str, Any]:
     "/alerts/cooldown/{node_id}/{rule_name}",
     summary="Réinitialise le cooldown d'une règle pour un nœud",
 )
-async def reset_cooldown(node_id: str, rule_name: str) -> dict[str, str]:
+async def reset_cooldown(node_id: str, rule_name: str, _: CurrentUser) -> dict[str, str]:
     """
     Supprime le cooldown actif pour le couple (node_id, rule_name).
     Permet de forcer le renvoi immédiat d'une alerte sans attendre l'expiration.
