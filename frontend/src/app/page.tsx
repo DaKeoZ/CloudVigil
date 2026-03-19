@@ -1,5 +1,6 @@
 import { Activity, RefreshCw } from "lucide-react";
 import { NodeGrid } from "@/components/NodeGrid";
+import { NetworkHealth } from "@/components/NetworkHealth";
 import { RepairHistory } from "@/components/RepairHistory";
 import { AuthGuard } from "@/components/AuthGuard";
 import { LogoutButton } from "@/components/LogoutButton";
@@ -56,6 +57,19 @@ export default function DashboardPage() {
           </div>
 
           <NodeGrid />
+
+          {/* ── Network Health ──────────────────────────────────────────────────── */}
+          <div className="mt-10">
+            <div className="mb-4">
+              <h2 className="text-lg font-semibold text-slate-200 tracking-tight">
+                Network Health
+              </h2>
+              <p className="text-slate-500 text-sm mt-1">
+                Disponibilité et latence des services externes · certificats SSL · mise à jour toutes les 60s
+              </p>
+            </div>
+            <NetworkHealth />
+          </div>
 
           {/* ── Auto-réparation ────────────────────────────────────────────────── */}
           <div className="mt-10">

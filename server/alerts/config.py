@@ -92,6 +92,32 @@ class AutoRepairConfig:
         return self.enabled and bool(self.rules)
 
 
+# ── Network Health ────────────────────────────────────────────────────────────
+
+@dataclass(frozen=True)
+class NetworkTarget:
+    """Une URL à surveiller avec un nom convivial."""
+    url:  str
+    name: str
+
+    def to_dict(self) -> dict:
+        return {"url": self.url, "name": self.name}
+
+
+@dataclass(frozen=True)
+class NetworkConfig:
+    enabled:          bool                    = True
+    interval_seconds: int                     = 60
+    timeout_seconds:  int                     = 10
+    ssl_warning_days: int                     = 7
+    cooldown_minutes: int                     = 60
+    targets:          tuple[NetworkTarget, ...] = field(default_factory=tuple)
+
+    @property
+    def is_active(self) -> bool:
+        return self.enabled and bool(self.targets)
+
+
 # ── Config globale ────────────────────────────────────────────────────────────
 
 @dataclass
@@ -100,6 +126,7 @@ class AlertConfig:
     slack:       WebhookTarget    = field(default_factory=WebhookTarget)
     discord:     WebhookTarget    = field(default_factory=WebhookTarget)
     auto_repair: AutoRepairConfig = field(default_factory=AutoRepairConfig)
+    network:     NetworkConfig    = field(default_factory=NetworkConfig)
 
     @property
     def has_active_webhook(self) -> bool:
@@ -161,6 +188,24 @@ def load_alert_config(path: Path | str) -> AlertConfig:
         rules=tuple(repair_rules),
     )
 
+    # ── Network Health ────────────────────────────────────────────────────────
+    nc_raw = raw.get("network_checks", {})
+    net_targets: list[NetworkTarget] = []
+    for t in nc_raw.get("targets", []):
+        u = t.get("url", "").strip()
+        n = t.get("name", u).strip()
+        if u:
+            net_targets.append(NetworkTarget(url=u, name=n))
+
+    network = NetworkConfig(
+        enabled=bool(nc_raw.get("enabled", True)),
+        interval_seconds=int(nc_raw.get("interval_seconds", 60)),
+        timeout_seconds=int(nc_raw.get("timeout_seconds", 10)),
+        ssl_warning_days=int(nc_raw.get("ssl_warning_days", 7)),
+        cooldown_minutes=int(nc_raw.get("cooldown_minutes", 60)),
+        targets=tuple(net_targets),
+    )
+
     cfg = AlertConfig(
         rules=rules,
         slack=WebhookTarget(
@@ -172,12 +217,14 @@ def load_alert_config(path: Path | str) -> AlertConfig:
             url=str(discord_raw.get("url", "")),
         ),
         auto_repair=auto_repair,
+        network=network,
     )
 
     log.info(
-        "[alerts] Config chargée : %d règle(s), %d conteneur(s) surveillé(s), Slack=%s, Discord=%s",
+        "[alerts] Config chargée : %d règle(s), %d conteneur(s), %d cible(s) réseau, Slack=%s, Discord=%s",
         len(rules),
         len(repair_rules),
+        len(net_targets),
         "✓" if cfg.slack.is_active  else "✗",
         "✓" if cfg.discord.is_active else "✗",
     )

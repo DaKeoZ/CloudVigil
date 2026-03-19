@@ -175,6 +175,69 @@ class WebhookNotifier:
         except aiohttp.ClientError as exc:
             raise RuntimeError(f"[{target}] Erreur réseau : {exc}") from exc
 
+    # ── Alerte réseau ─────────────────────────────────────────────────────────
+
+    async def send_network_alert(
+        self,
+        target_name: str,
+        url:         str,
+        reason:      str,    # "down" | "ssl_expiry"
+        detail:      str,    # message descriptif
+        severity:    str = "critical",
+    ) -> None:
+        """Envoie une alerte réseau (cible injoignable ou SSL expirant) vers les webhooks."""
+        if not self._config.has_active_webhook:
+            log.info(
+                "[notifier] Alerte réseau '%s' — aucun webhook actif, log uniquement.",
+                target_name,
+            )
+            return
+
+        ts = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+        emoji = _EMOJI.get(severity, "🚨")
+
+        tasks: list[object] = []
+        if self._config.slack.is_active:
+            color  = _SLACK_COLOR.get(severity, "#ef4444")
+            reason_label = "🔴 Hors ligne" if reason == "down" else "🔐 SSL expirant"
+            payload: dict[str, Any] = {
+                "text": f"{emoji} *Alerte réseau CloudVigil — {target_name}*",
+                "attachments": [{
+                    "color": color,
+                    "fields": [
+                        {"title": "Service",  "value": f"`{target_name}`",    "short": True},
+                        {"title": "URL",      "value": url,                   "short": False},
+                        {"title": "Problème", "value": reason_label,          "short": True},
+                        {"title": "Détail",   "value": detail,                "short": False},
+                    ],
+                    "footer": f"CloudVigil Network Monitor • {ts}",
+                }],
+            }
+            tasks.append(self._post(self._config.slack.url, payload, "Slack"))
+
+        if self._config.discord.is_active:
+            color  = _DISCORD_COLOR.get(severity, 0xEF4444)
+            payload_d: dict[str, Any] = {
+                "embeds": [{
+                    "title":       f"{emoji}  Alerte réseau — {target_name}",
+                    "description": detail,
+                    "color":       color,
+                    "fields": [
+                        {"name": "Service",  "value": f"`{target_name}`", "inline": True},
+                        {"name": "Raison",   "value": reason,             "inline": True},
+                        {"name": "URL",      "value": url,                "inline": False},
+                    ],
+                    "footer":    {"text": f"CloudVigil Network Monitor • {ts}"},
+                    "timestamp": datetime.now(tz=timezone.utc).isoformat(),
+                }]
+            }
+            tasks.append(self._post(self._config.discord.url, payload_d, "Discord"))
+
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        for res in results:
+            if isinstance(res, Exception):
+                log.error("[notifier] Échec alerte réseau : %s", res)
+
     # ── Test de connexion ─────────────────────────────────────────────────────
 
     async def send_test(self) -> dict[str, str]:

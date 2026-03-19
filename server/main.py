@@ -29,6 +29,7 @@ from fastapi import WebSocket, WebSocketDisconnect
 
 from server import database, store, ws_hub
 from server.alerts import AlertEngine, load_alert_config
+from server.network import NetworkProber
 from server.auth import CurrentUser, Token, create_access_token, get_current_user, verify_credentials
 from server.config import Settings, get_settings
 from server.grpc_server import MonitoringServicer
@@ -93,20 +94,24 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     await grpc_server.start()
 
-    # 3. Charger la configuration des alertes et démarrer le moteur
-    alert_config = load_alert_config(Path(settings.alerts_config_path))
-    alert_engine = AlertEngine(alert_config)
+    # 3. Charger la configuration des alertes, démarrer le moteur + la sonde réseau
+    alert_config   = load_alert_config(Path(settings.alerts_config_path))
+    alert_engine   = AlertEngine(alert_config)
+    network_prober = NetworkProber(alert_config)
     await alert_engine.start()
+    await network_prober.start()
 
     # Stocker les références pour les routes
-    app.state.grpc_server  = grpc_server
-    app.state.alert_engine = alert_engine
+    app.state.grpc_server     = grpc_server
+    app.state.alert_engine    = alert_engine
+    app.state.network_prober  = network_prober
 
     try:
         yield
     finally:
-        # Arrêt gracieux : alertes → gRPC → InfluxDB
+        # Arrêt gracieux : alertes + réseau → gRPC → InfluxDB
         await alert_engine.stop()
+        await network_prober.stop()
         log.info("Arrêt du serveur gRPC (grace=5s)…")
         await grpc_server.stop(grace=5)
         await database.close_db()
@@ -336,6 +341,45 @@ async def get_repairs(
         "events":  events,
         "total":   len(events),
         "window_minutes": minutes,
+    }
+
+
+# ── Network Health ────────────────────────────────────────────────────────────
+
+@app.get("/network", summary="État en temps réel des services réseau surveillés")
+async def network_health(_: CurrentUser) -> dict[str, Any]:
+    """
+    Retourne le dernier résultat de sonde pour chaque URL configurée dans
+    `network_checks.targets`, ainsi que l'historique des 20 dernières mesures
+    par cible (pour les sparklines de latence).
+
+    Statuts possibles :
+    - `"up"`      : cible joignable (HTTP 2xx)
+    - `"down"`    : cible injoignable (timeout, erreur réseau, code >= 400)
+    - `"pending"` : premier probe pas encore effectué
+
+    SSL status :
+    - `"ok"`       : cert valide, expire dans > 30 jours
+    - `"warning"`  : expire dans 7–30 jours
+    - `"critical"` : expire dans < 7 jours
+    - `"expired"`  : certificat expiré
+    - `"na"`       : pas de HTTPS ou info non disponible
+    """
+    prober: NetworkProber | None = getattr(app.state, "network_prober", None)
+    if prober is None:
+        return {"targets": [], "total": 0, "configured": False, "probe_stats": {}}
+
+    targets = prober.get_latest()
+    up_count   = sum(1 for t in targets if t.get("status") == "up")
+    down_count = sum(1 for t in targets if t.get("status") == "down")
+
+    return {
+        "targets":     targets,
+        "total":       len(targets),
+        "up":          up_count,
+        "down":        down_count,
+        "configured":  True,
+        "probe_stats": prober.stats(),
     }
 
 

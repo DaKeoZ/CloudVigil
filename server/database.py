@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from influxdb_client import Point
 from influxdb_client.client.influxdb_client_async import InfluxDBClientAsync
@@ -215,6 +215,92 @@ from(bucket: "{settings.influxdb_bucket}")
         return events
     except Exception as exc:
         log.warning("[database] query_repair_events échouée : %s", exc)
+        return []
+
+
+async def write_probe_result(result: Any) -> None:
+    """
+    Journalise le résultat d'une sonde réseau dans InfluxDB.
+
+    Measurement : network_probes
+    Tags   : url_name, status (up/down)
+    Fields : latency_ms (float), status_code (int), ssl_days_remaining (int), reachable (int 0/1)
+    """
+    if _write_api is None:
+        return
+
+    settings = get_settings()
+    ts = result.checked_at
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+
+    point = (
+        Point("network_probes")
+        .tag("url_name", result.target.name)
+        .tag("url",      result.target.url)
+        .tag("status",   result.status)
+        .field("reachable",  int(result.reachable))
+    )
+
+    if result.latency_ms is not None:
+        point = point.field("latency_ms", float(result.latency_ms))
+
+    if result.status_code is not None:
+        point = point.field("status_code", int(result.status_code))
+
+    if result.ssl_days_remaining is not None:
+        point = point.field("ssl_days_remaining", int(result.ssl_days_remaining))
+
+    point = point.time(ts)
+
+    try:
+        await _write_api.write(bucket=settings.influxdb_bucket, record=point)
+    except Exception as exc:
+        log.debug("[database] write_probe_result échoué : %s", exc)
+
+
+async def query_probe_results(minutes: int = 1440) -> list[dict]:
+    """
+    Récupère l'historique des sondes réseau sur les `minutes` dernières minutes.
+    Retourne une liste triée du plus récent au plus ancien (max 500 points).
+    """
+    if _client is None:
+        return []
+
+    settings = get_settings()
+    flux = f"""
+from(bucket: "{settings.influxdb_bucket}")
+  |> range(start: -{minutes}m)
+  |> filter(fn: (r) => r._measurement == "network_probes")
+  |> filter(fn: (r) =>
+      r._field == "latency_ms" or
+      r._field == "ssl_days_remaining" or
+      r._field == "reachable" or
+      r._field == "status_code")
+  |> pivot(rowKey: ["_time"], columnKey: ["_field"], valueColumn: "_value")
+  |> sort(columns: ["_time"], desc: true)
+  |> limit(n: 500)
+"""
+    try:
+        query_api = _client.query_api()
+        tables = await query_api.query(flux, org=settings.influxdb_org)
+        results: list[dict] = []
+        for table in tables:
+            for record in table.records:
+                v = record.values
+                results.append({
+                    "timestamp":         record.get_time().isoformat(),
+                    "url_name":          v.get("url_name", "?"),
+                    "url":               v.get("url", "?"),
+                    "status":            v.get("status", "?"),
+                    "reachable":         bool(v.get("reachable", 0)),
+                    "latency_ms":        v.get("latency_ms"),
+                    "status_code":       v.get("status_code"),
+                    "ssl_days_remaining": v.get("ssl_days_remaining"),
+                })
+        return results
+    except Exception as exc:
+        log.warning("[database] query_probe_results échouée : %s", exc)
         return []
 
 

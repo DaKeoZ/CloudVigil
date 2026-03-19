@@ -30,6 +30,48 @@ export interface DashboardData {
   total: number;
 }
 
+// ── Network Health ────────────────────────────────────────────────────────────
+
+export type NetworkStatus  = "up" | "down" | "pending";
+export type SslStatus      = "ok" | "warning" | "critical" | "expired" | "na";
+
+export interface LatencyPoint {
+  t:          string;   // ISO timestamp
+  latency_ms: number | null;
+  up:         boolean;
+}
+
+export interface NetworkTarget {
+  name:               string;
+  url:                string;
+  status:             NetworkStatus;
+  reachable:          boolean | null;
+  status_code:        number | null;
+  latency_ms:         number | null;
+  ssl_days_remaining: number | null;
+  ssl_status:         SslStatus;
+  error:              string | null;
+  last_checked:       string | null;
+  history:            LatencyPoint[];
+}
+
+export interface NetworkData {
+  targets:     NetworkTarget[];
+  total:       number;
+  up:          number;
+  down:        number;
+  configured:  boolean;
+  probe_stats: {
+    total_probes:  number;
+    total_alerts:  number;
+    interval_s:    number;
+    started_at:    string | null;
+    running:       boolean;
+  };
+}
+
+// ── Réparations ───────────────────────────────────────────────────────────────
+
 export interface RepairEvent {
   timestamp: string;
   node_id: string;

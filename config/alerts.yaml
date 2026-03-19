@@ -71,6 +71,30 @@ auto_repair:
     - name_pattern: "my-api"
     # Ajouter d'autres conteneurs critiques ici
 
+# ── Supervision réseau (Network Health) ───────────────────────────────────────
+# CloudVigil "ping" ces URLs toutes les `interval_seconds` secondes.
+# Pour chaque cible HTTPS, il vérifie aussi l'expiration du certificat SSL.
+# Une alerte webhook est envoyée si :
+#   - La cible est injoignable (status != 2xx ou timeout)
+#   - Le certificat SSL expire dans moins de `ssl_warning_days` jours
+network_checks:
+  enabled: true
+  interval_seconds: 60      # Fréquence des sondes
+  timeout_seconds: 10       # Timeout HTTP par requête
+  ssl_warning_days: 7       # Alerte critique si cert expire dans < N jours
+  cooldown_minutes: 60      # Cooldown entre deux alertes sur la même URL
+
+  targets:
+    - url: "https://www.google.com"
+      name: "Google"
+    - url: "https://api.github.com"
+      name: "GitHub API"
+    # Ajouter vos propres URLs ici :
+    # - url: "https://monsite.com"
+    #   name: "Mon Site"
+    # - url: "https://api.monsite.com/health"
+    #   name: "API Prod"
+
 # ── Destinations des notifications ────────────────────────────────────────────
 webhooks:
 
