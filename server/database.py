@@ -131,6 +131,93 @@ async def write_container_metric(
     )
 
 
+async def write_repair_event(
+    node_id:        str,
+    container_id:   str,
+    container_name: str,
+    action:         str,
+    success:        bool,
+    message:        str,
+    timestamp:      datetime,
+) -> None:
+    """
+    Journalise une tentative de réparation automatique dans InfluxDB.
+    Measurement: repair_events
+    Tags:  node_id, container_id (12 chars), container_name, action, status
+    Fields: success (int 0/1), message (string)
+    """
+    if _write_api is None:
+        log.warning("[database] write_repair_event ignoré — DB non initialisée.")
+        return
+
+    settings = get_settings()
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.replace(tzinfo=timezone.utc)
+
+    point = (
+        Point("repair_events")
+        .tag("node_id",        node_id)
+        .tag("container_id",   container_id[:12] if container_id else "?")
+        .tag("container_name", container_name or "?")
+        .tag("action",         action)
+        .tag("status",         "success" if success else "failed")
+        .field("success", int(success))
+        .field("message", message[:500])
+        .time(timestamp)
+    )
+
+    try:
+        await _write_api.write(bucket=settings.influxdb_bucket, record=point)
+        log.info(
+            "[database] Réparation journalisée — node=%s ctn=%s action=%s status=%s",
+            node_id, container_name or container_id[:12], action,
+            "success" if success else "failed",
+        )
+    except Exception as exc:
+        log.warning("[database] write_repair_event échoué : %s", exc)
+
+
+async def query_repair_events(minutes: int = 1440) -> list[dict]:
+    """
+    Récupère l'historique des événements de réparation sur les `minutes` dernières minutes
+    (défaut : 24 h). Résultats triés du plus récent au plus ancien.
+    """
+    if _client is None:
+        return []
+
+    settings = get_settings()
+    flux = f"""
+from(bucket: "{settings.influxdb_bucket}")
+  |> range(start: -{minutes}m)
+  |> filter(fn: (r) => r._measurement == "repair_events")
+  |> filter(fn: (r) => r._field == "success" or r._field == "message")
+  |> pivot(rowKey: ["_time"], columnKey: ["_field"], valueColumn: "_value")
+  |> sort(columns: ["_time"], desc: true)
+  |> limit(n: 200)
+"""
+    try:
+        query_api = _client.query_api()
+        tables = await query_api.query(flux, org=settings.influxdb_org)
+        events: list[dict] = []
+        for table in tables:
+            for record in table.records:
+                v = record.values
+                events.append({
+                    "timestamp":      record.get_time().isoformat(),
+                    "node_id":        v.get("node_id", "?"),
+                    "container_id":   v.get("container_id", "?"),
+                    "container_name": v.get("container_name", "?"),
+                    "action":         v.get("action", "?"),
+                    "status":         v.get("status", "?"),
+                    "success":        bool(v.get("success", 0)),
+                    "message":        str(v.get("message", "")),
+                })
+        return events
+    except Exception as exc:
+        log.warning("[database] query_repair_events échouée : %s", exc)
+        return []
+
+
 async def write_metric(
     node_id: str,
     cpu_usage: float,

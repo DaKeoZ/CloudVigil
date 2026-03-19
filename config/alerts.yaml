@@ -56,6 +56,22 @@ rules:
     severity: critical
 
 # ── Destinations des notifications ────────────────────────────────────────────
+# ── Auto-réparation des conteneurs ────────────────────────────────────────────
+# Si un conteneur listé est dans un état non-running (exited, dead, oomkilled…),
+# le Master envoie automatiquement une commande restart à l'agent concerné.
+# Un cooldown empêche les redémarrages en boucle.
+auto_repair:
+  enabled: true
+  cooldown_minutes: 10      # Délai min entre deux restarts du même conteneur
+  restart_timeout_s: 10     # Secondes accordées au conteneur pour s'arrêter proprement
+
+  # Conteneurs critiques à surveiller (matching par sous-chaîne, insensible à la casse)
+  containers:
+    - name_pattern: "nginx"
+    - name_pattern: "my-api"
+    # Ajouter d'autres conteneurs critiques ici
+
+# ── Destinations des notifications ────────────────────────────────────────────
 webhooks:
 
   slack:

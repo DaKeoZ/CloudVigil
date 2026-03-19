@@ -18,7 +18,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from server import database
+from server import database, store
 from server.alerts.config import AlertConfig, AlertRule
 from server.alerts.cooldown import CooldownTracker
 from server.alerts.notifier import WebhookNotifier
@@ -38,27 +38,44 @@ class AlertEngine:
       await engine.stop()    ← appelé à l'arrêt du serveur
     """
 
+    # États d'un conteneur déclenchant l'auto-restart
+    _UNHEALTHY_STATES = frozenset({"exited", "dead", "oomkilled", "error"})
+
     def __init__(self, config: AlertConfig) -> None:
-        self._config   = config
-        self._notifier = WebhookNotifier(config)
-        self._cooldown = CooldownTracker()
+        self._config          = config
+        self._notifier        = WebhookNotifier(config)
+        self._cooldown        = CooldownTracker()
+        self._repair_cooldown = CooldownTracker()  # cooldown séparé pour les restarts
         self._task:    asyncio.Task | None = None
-        self._total_alerts_sent: int = 0
-        self._total_evaluations:  int = 0
+        self._total_alerts_sent:    int = 0
+        self._total_evaluations:    int = 0
+        self._total_repairs_triggered: int = 0
         self._last_run_at: datetime | None = None
 
     # ── Cycle de vie ──────────────────────────────────────────────────────────
 
     async def start(self) -> None:
-        if not self._config.rules:
-            log.info("[alerts] Aucune règle définie — moteur désactivé.")
+        ar = self._config.auto_repair
+        has_rules   = bool(self._config.rules)
+        has_repair  = ar.is_active
+
+        if not has_rules and not has_repair:
+            log.info("[alerts] Aucune règle ni auto-réparation — moteur désactivé.")
             return
 
-        if not self._config.has_active_webhook:
+        if has_rules and not self._config.has_active_webhook:
             log.warning(
                 "[alerts] %d règle(s) chargée(s) mais aucun webhook actif — "
                 "les alertes seront uniquement loguées.",
                 len(self._config.rules),
+            )
+
+        if has_repair:
+            log.info(
+                "[alerts] Auto-réparation activée — %d conteneur(s) surveillé(s), "
+                "cooldown=%dmin",
+                len(ar.rules),
+                ar.cooldown_minutes,
             )
 
         self._task = asyncio.create_task(self._run_loop(), name="cloudvigil-alert-engine")
@@ -76,20 +93,28 @@ class AlertEngine:
             except asyncio.CancelledError:
                 pass
         log.info(
-            "[alerts] Moteur arrêté — %d évaluation(s), %d alerte(s) envoyée(s).",
+            "[alerts] Moteur arrêté — %d évaluation(s), %d alerte(s), %d restart(s).",
             self._total_evaluations,
             self._total_alerts_sent,
+            self._total_repairs_triggered,
         )
 
     # ── Boucle principale ─────────────────────────────────────────────────────
 
     async def _run_loop(self) -> None:
-        """Boucle infinie : évalue toutes les règles toutes les CHECK_INTERVAL_SECONDS."""
-        # Premier cycle immédiat
+        """
+        Boucle infinie : à chaque cycle, exécute en parallèle :
+          1. L'évaluation des règles de seuils (alertes webhook).
+          2. La vérification de santé des conteneurs (auto-réparation).
+        """
         await asyncio.sleep(CHECK_INTERVAL_SECONDS)
         while True:
             try:
-                await self._evaluate_all_nodes()
+                await asyncio.gather(
+                    self._evaluate_all_nodes(),
+                    self._check_container_repairs(),
+                    return_exceptions=True,
+                )
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -208,20 +233,121 @@ class AlertEngine:
         self._cooldown.set(node_id, rule.name, rule.cooldown_minutes)
         self._total_alerts_sent += 1
 
+    # ── Auto-réparation ───────────────────────────────────────────────────────────
+
+    async def _check_container_repairs(self) -> None:
+        """
+        Inspecte l'état de tous les conteneurs connus dans le store en mémoire.
+        Pour chaque conteneur en état non-running correspondant à une règle
+        d'auto-réparation, envoie une commande restart à l'agent via le hub WS.
+        """
+        ar = self._config.auto_repair
+        if not ar.is_active:
+            return
+
+        from server import ws_hub  # import tardif pour éviter les cycles
+
+        for node_id in store.list_nodes():
+            snapshot = store.get_containers(node_id)
+            if not snapshot:
+                continue
+
+            for ctn in snapshot.get("containers", []):
+                state = (ctn.get("state") or "").lower()
+                if state not in self._UNHEALTHY_STATES:
+                    continue
+
+                cid  = ctn.get("id", "")
+                name = (ctn.get("name") or "").lstrip("/")
+
+                matched = next(
+                    (r for r in ar.rules if r.matches(name)),
+                    None,
+                )
+                if matched is None:
+                    continue
+
+                cooldown_key = f"{node_id}:{cid}"
+                if self._repair_cooldown.is_active(node_id, cooldown_key):
+                    log.debug("[repair] Cooldown actif %s/%s — restart ignoré.", node_id, name)
+                    continue
+
+                log.warning(
+                    "[repair] \U0001f527 Conteneur '%s' (%s) en état '%s' sur nœud '%s' "
+                    "— restart automatique déclenché.",
+                    name, cid[:12], state, node_id,
+                )
+
+                asyncio.create_task(
+                    self._trigger_restart(
+                        node_id=node_id,
+                        container_id=cid,
+                        container_name=name,
+                        timeout_s=ar.restart_timeout_s,
+                        ws_hub=ws_hub,
+                    )
+                )
+
+                self._repair_cooldown.set(node_id, cooldown_key, ar.cooldown_minutes)
+                self._total_repairs_triggered += 1
+
+    async def _trigger_restart(
+        self,
+        node_id:        str,
+        container_id:   str,
+        container_name: str,
+        timeout_s:      int,
+        ws_hub:         Any,
+    ) -> None:
+        """
+        Envoie la commande restart à l'agent via le hub WS.
+        En cas d'agent absent, journalise l'échec directement dans InfluxDB.
+        """
+        sent = await ws_hub.send_restart_command(
+            node_id=node_id,
+            container_id=container_id,
+            container_name=container_name,
+            timeout_s=timeout_s,
+        )
+
+        if not sent:
+            log.error(
+                "[repair] Agent '%s' non connecté — restart '%s' impossible.",
+                node_id, container_name,
+            )
+            await database.write_repair_event(
+                node_id=node_id,
+                container_id=container_id,
+                container_name=container_name,
+                action="restart",
+                success=False,
+                message="Agent non connecté au hub WebSocket",
+                timestamp=datetime.now(tz=timezone.utc),
+            )
+
     # ── Statistiques ──────────────────────────────────────────────────────────
 
     def stats(self) -> dict[str, Any]:
         """Retourne l'état du moteur pour l'endpoint GET /alerts/status."""
+        ar = self._config.auto_repair
         return {
-            "running":          self._task is not None and not self._task.done(),
-            "rules_count":      len(self._config.rules),
-            "check_interval_s": CHECK_INTERVAL_SECONDS,
-            "total_evaluations": self._total_evaluations,
-            "total_alerts_sent": self._total_alerts_sent,
-            "last_run_at":      self._last_run_at.isoformat() if self._last_run_at else None,
+            "running":               self._task is not None and not self._task.done(),
+            "rules_count":           len(self._config.rules),
+            "check_interval_s":      CHECK_INTERVAL_SECONDS,
+            "total_evaluations":     self._total_evaluations,
+            "total_alerts_sent":     self._total_alerts_sent,
+            "total_repairs_triggered": self._total_repairs_triggered,
+            "last_run_at":           self._last_run_at.isoformat() if self._last_run_at else None,
             "webhooks": {
                 "slack":   "actif" if self._config.slack.is_active   else "inactif",
                 "discord": "actif" if self._config.discord.is_active else "inactif",
+            },
+            "auto_repair": {
+                "enabled":          ar.enabled,
+                "containers_count": len(ar.rules),
+                "cooldown_minutes": ar.cooldown_minutes,
+                "containers":       [r.to_dict() for r in ar.rules],
+                "active_cooldowns": self._repair_cooldown.snapshot(),
             },
             "active_cooldowns": self._cooldown.snapshot(),
             "rules": [r.to_dict() for r in self._config.rules],

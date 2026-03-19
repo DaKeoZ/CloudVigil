@@ -1,13 +1,18 @@
 // Package wscontrol implémente le canal de contrôle WebSocket entre l'agent
 // et le serveur Master.
 //
-// Protocole :
+// Protocole (Server → Agent) :
 //
-//	Server → Agent  {"action":"start_logs","container_id":"…","session_id":"…","tail":"50"}
-//	Server → Agent  {"action":"stop_logs","session_id":"…"}
-//	Agent  → Server {"type":"log","session_id":"…","container_id":"…","stream":"stdout","line":"…"}
-//	Agent  → Server {"type":"eof","session_id":"…","container_id":"…"}
-//	Agent  → Server {"type":"error","session_id":"…","container_id":"…","line":"…"}
+//	{"action":"start_logs","container_id":"…","session_id":"…","tail":"50"}
+//	{"action":"stop_logs","session_id":"…"}
+//	{"action":"restart_container","container_id":"…","container_name":"…","session_id":"…","timeout_s":10}
+//
+// Protocole (Agent → Server) :
+//
+//	{"type":"log","session_id":"…","container_id":"…","stream":"stdout","line":"…"}
+//	{"type":"eof","session_id":"…","container_id":"…"}
+//	{"type":"error","session_id":"…","container_id":"…","line":"…"}
+//	{"type":"restart_result","session_id":"…","container_id":"…","container_name":"…","node_id":"…","success":true,"line":"OK"}
 //
 // Seul un goroutine écrit sur la connexion WebSocket (writePump) — gorilla/websocket
 // n'autorise pas les écritures concurrentes.
@@ -34,19 +39,25 @@ import (
 
 // Command est reçue depuis le serveur.
 type Command struct {
-	Action      string `json:"action"`       // "start_logs" | "stop_logs"
-	ContainerID string `json:"container_id"`
-	SessionID   string `json:"session_id"`
-	Tail        string `json:"tail"` // "50", "100", "all" — vide = "50"
+	Action        string `json:"action"`         // "start_logs" | "stop_logs" | "restart_container"
+	ContainerID   string `json:"container_id"`
+	ContainerName string `json:"container_name,omitempty"` // pour restart_container
+	SessionID     string `json:"session_id"`
+	Tail          string `json:"tail,omitempty"`      // "50", "100", "all" — vide = "50"
+	TimeoutS      int    `json:"timeout_s,omitempty"` // secondes, 0 = défaut Docker (10s)
 }
 
 // LogLine est envoyée vers le serveur.
+// Le champ Success est peuplé uniquement pour type="restart_result".
 type LogLine struct {
-	Type        string `json:"type"`         // "log" | "eof" | "error"
-	SessionID   string `json:"session_id"`
-	ContainerID string `json:"container_id"`
-	Stream      string `json:"stream,omitempty"` // "stdout" | "stderr"
-	Line        string `json:"line,omitempty"`
+	Type          string `json:"type"`                    // "log" | "eof" | "error" | "restart_result"
+	SessionID     string `json:"session_id"`
+	ContainerID   string `json:"container_id"`
+	ContainerName string `json:"container_name,omitempty"`
+	NodeID        string `json:"node_id,omitempty"` // peuplé pour restart_result
+	Stream        string `json:"stream,omitempty"`  // "stdout" | "stderr"
+	Line          string `json:"line,omitempty"`
+	Success       *bool  `json:"success,omitempty"` // pour restart_result
 }
 
 // ── Client ────────────────────────────────────────────────────────────────────
@@ -140,6 +151,8 @@ func (c *Client) Run(ctx context.Context) error {
 			c.handleStartLogs(connCtx, cmd)
 		case "stop_logs":
 			c.handleStopLogs(cmd.SessionID)
+		case "restart_container":
+			go c.handleRestartContainer(connCtx, cmd)
 		default:
 			log.Printf("[wscontrol] commande inconnue : %q", cmd.Action)
 		}
@@ -305,6 +318,59 @@ func (c *Client) streamDockerLogs(ctx context.Context, cmd Command) {
 		wg.Wait()
 	}
 }
+
+// ── Auto-réparation ───────────────────────────────────────────────────────────
+
+// handleRestartContainer exécute docker restart et renvoie le résultat au Master.
+// Tourne dans sa propre goroutine pour ne pas bloquer la boucle de lecture.
+func (c *Client) handleRestartContainer(ctx context.Context, cmd Command) {
+	name := cmd.ContainerName
+	if name == "" {
+		name = cmd.ContainerID[:min(12, len(cmd.ContainerID))]
+	}
+	log.Printf("[wscontrol] restart demandé — conteneur=%s (%s) session=%s",
+		name, cmd.ContainerID[:min(12, len(cmd.ContainerID))], cmd.SessionID)
+
+	ok := true
+	msg := "Conteneur redémarré avec succès."
+
+	if c.docker == nil {
+		ok = false
+		msg = "Docker non disponible sur cet agent."
+	} else {
+		timeout := cmd.TimeoutS
+		if timeout <= 0 {
+			timeout = 10
+		}
+		opts := container.StopOptions{Timeout: &timeout}
+		if err := c.docker.ContainerRestart(ctx, cmd.ContainerID, opts); err != nil {
+			ok = false
+			msg = fmt.Sprintf("ContainerRestart: %v", err)
+			log.Printf("[wscontrol] erreur restart %s : %v", name, err)
+		} else {
+			log.Printf("[wscontrol] restart réussi — conteneur=%s", name)
+		}
+	}
+
+	c.send(LogLine{
+		Type:          "restart_result",
+		SessionID:     cmd.SessionID,
+		ContainerID:   cmd.ContainerID,
+		ContainerName: name,
+		NodeID:        c.nodeID,
+		Line:          msg,
+		Success:       &ok,
+	})
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+// ── scanLines ─────────────────────────────────────────────────────────────────
 
 // scanLines lit un flux ligne par ligne et l'envoie au Master.
 func (c *Client) scanLines(ctx context.Context, r io.Reader, cmd Command, stream string) {

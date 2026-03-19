@@ -20,7 +20,7 @@ from typing import Annotated, Any, AsyncGenerator
 import grpc
 import grpc.aio
 import uvicorn
-from fastapi import Depends, FastAPI, HTTPException, status
+from fastapi import Depends, FastAPI, HTTPException, Query, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.security import OAuth2PasswordRequestForm
@@ -315,6 +315,28 @@ async def reset_cooldown(node_id: str, rule_name: str, _: CurrentUser) -> dict[s
         raise HTTPException(status_code=503, detail="Moteur d'alertes non initialisé.")
     engine.cooldown.reset(node_id, rule_name)
     return {"status": "ok", "message": f"Cooldown réinitialisé pour ({node_id}, {rule_name})."}
+
+
+# ── Auto-réparation ───────────────────────────────────────────────────────────
+
+@app.get("/repairs", summary="Historique des réparations automatiques")
+async def get_repairs(
+    _: CurrentUser,
+    minutes: int = Query(default=1440, ge=1, le=43200, description="Fenêtre temporelle en minutes (défaut 24 h)"),
+) -> dict[str, Any]:
+    """
+    Retourne l'historique des tentatives de réparation automatique (restarts) journalisées
+    dans InfluxDB. Triées de la plus récente à la plus ancienne.
+
+    - `minutes=1440` → 24 dernières heures (défaut)
+    - `minutes=60`   → 1 heure
+    """
+    events = await database.query_repair_events(minutes=minutes)
+    return {
+        "events":  events,
+        "total":   len(events),
+        "window_minutes": minutes,
+    }
 
 
 # ── WebSocket — Log Viewer ─────────────────────────────────────────────────────

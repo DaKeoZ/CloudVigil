@@ -29,3 +29,20 @@ export interface DashboardData {
   nodes: NodeSummary[];
   total: number;
 }
+
+export interface RepairEvent {
+  timestamp: string;
+  node_id: string;
+  container_id: string;
+  container_name: string;
+  action: string;
+  status: "success" | "failed";
+  success: boolean;
+  message: string;
+}
+
+export interface RepairsData {
+  events: RepairEvent[];
+  total: number;
+  window_minutes: number;
+}

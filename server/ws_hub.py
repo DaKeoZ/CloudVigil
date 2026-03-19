@@ -1,18 +1,22 @@
 """
-CloudVigil — Hub WebSocket pour le Log Viewer.
+CloudVigil — Hub WebSocket (Log Viewer + Auto-réparation).
 
 Topologie :
     Agent Go  ──WS──▶  /ws/agent/{node_id}      (connexion persistante, 1 par agent)
     Frontend  ──WS──▶  /ws/logs/{node_id}/{cid}  (1 par onglet de logs ouvert)
 
 Protocole Agent → Hub :
-    {"type":"log",   "session_id":"…", "container_id":"…", "stream":"stdout", "line":"…"}
-    {"type":"eof",   "session_id":"…", "container_id":"…"}
-    {"type":"error", "session_id":"…", "container_id":"…", "line":"…"}
+    {"type":"log",            "session_id":"…", "container_id":"…", "stream":"stdout", "line":"…"}
+    {"type":"eof",            "session_id":"…", "container_id":"…"}
+    {"type":"error",          "session_id":"…", "container_id":"…", "line":"…"}
+    {"type":"restart_result", "session_id":"…", "container_id":"…", "container_name":"…",
+                              "node_id":"…", "success":true, "line":"OK"}
 
 Protocole Hub → Agent :
-    {"action":"start_logs", "session_id":"…", "container_id":"…", "tail":"50"}
-    {"action":"stop_logs",  "session_id":"…"}
+    {"action":"start_logs",       "session_id":"…", "container_id":"…", "tail":"50"}
+    {"action":"stop_logs",        "session_id":"…"}
+    {"action":"restart_container","session_id":"…", "container_id":"…",
+                                  "container_name":"…", "timeout_s":10}
 """
 
 from __future__ import annotations
@@ -20,6 +24,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
+from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import WebSocket
@@ -72,8 +77,18 @@ async def unregister_frontend(session_id: str) -> None:
 async def route_agent_message(msg: dict[str, Any]) -> None:
     """
     Route un message provenant d'un agent vers la session frontend correspondante.
-    Ignore silencieusement si la session a déjà été fermée.
+
+    Types spéciaux :
+    - "restart_result" : journalisé dans InfluxDB puis ignoré côté frontend.
+    - "log" / "eof" / "error" : transmis au WebSocket frontend de la session.
     """
+    msg_type = msg.get("type")
+
+    if msg_type == "restart_result":
+        await _handle_restart_result(msg)
+        return
+
+    # Transmettre les logs au frontend
     session_id = msg.get("session_id")
     if not session_id:
         return
@@ -86,6 +101,39 @@ async def route_agent_message(msg: dict[str, Any]) -> None:
         await ws.send_json(msg)
     except Exception as exc:
         log.debug("[ws_hub] Envoi frontend session=%s échoué : %s", session_id, exc)
+
+
+async def _handle_restart_result(msg: dict[str, Any]) -> None:
+    """
+    Traite un résultat de restart_container renvoyé par l'agent :
+    - Log dans InfluxDB pour l'historique des incidents.
+    """
+    from server import database  # import tardif pour éviter les imports circulaires
+
+    node_id        = msg.get("node_id", msg.get("_node_id", "unknown"))
+    container_id   = msg.get("container_id", "")
+    container_name = msg.get("container_name", "")
+    success        = bool(msg.get("success", False))
+    message        = msg.get("line", "")
+
+    status_label = "succès" if success else "échec"
+    log.info(
+        "[ws_hub] Résultat restart %s/%s : %s — %s",
+        node_id,
+        (container_id or "?")[:12],
+        status_label,
+        message,
+    )
+
+    await database.write_repair_event(
+        node_id=node_id,
+        container_id=container_id,
+        container_name=container_name,
+        action="restart",
+        success=success,
+        message=message,
+        timestamp=datetime.now(tz=timezone.utc),
+    )
 
 
 async def send_to_agent(node_id: str, command: dict[str, Any]) -> bool:
@@ -112,6 +160,9 @@ async def pump_agent(node_id: str, ws: WebSocket) -> None:
     Retourne quand la connexion se ferme (normalement ou sur erreur).
     """
     async for msg in ws.iter_json():
+        # Injecter le node_id pour les messages qui ne l'incluent pas (ex: restart_result)
+        if "node_id" not in msg:
+            msg["_node_id"] = node_id
         await route_agent_message(msg)
 
 
@@ -161,4 +212,25 @@ async def close_log_session(node_id: str, session_id: str) -> None:
     await send_to_agent(node_id, {
         "action":     "stop_logs",
         "session_id": session_id,
+    })
+
+
+async def send_restart_command(
+    node_id:        str,
+    container_id:   str,
+    container_name: str,
+    timeout_s:      int = 10,
+) -> bool:
+    """
+    Envoie une commande restart_container à l'agent via le canal WebSocket.
+    Retourne False si l'agent n'est pas connecté.
+    Le résultat est renvoyé de manière asynchrone via un message restart_result.
+    """
+    session_id = new_session_id()
+    return await send_to_agent(node_id, {
+        "action":         "restart_container",
+        "container_id":   container_id,
+        "container_name": container_name,
+        "session_id":     session_id,
+        "timeout_s":      timeout_s,
     })
