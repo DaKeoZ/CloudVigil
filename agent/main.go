@@ -17,6 +17,7 @@ import (
 	"github.com/cloudvigil/agent/internal/connect"
 	dockercollector "github.com/cloudvigil/agent/internal/docker"
 	"github.com/cloudvigil/agent/internal/metrics"
+	"github.com/cloudvigil/agent/internal/wscontrol"
 	"github.com/cloudvigil/agent/pb"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
@@ -36,6 +37,11 @@ type config struct {
 	TLSClientCert string // CLOUDVIGIL_TLS_AGENT_CERT → certs/agent/agent.crt
 	TLSClientKey  string // CLOUDVIGIL_TLS_AGENT_KEY  → certs/agent/agent.key
 	TLSServerName string // CLOUDVIGIL_TLS_SERVER_NAME → "cloudvigil-server"
+
+	// WebSocket Log Viewer
+	// CLOUDVIGIL_WS_SERVER : adresse HTTP du Master pour le canal de contrôle WS.
+	// Exemples : ws://localhost:8000  |  wss://monitoring.example.com
+	WSServer string
 }
 
 func loadConfig() config {
@@ -56,6 +62,7 @@ func loadConfig() config {
 		TLSClientCert:   os.Getenv("CLOUDVIGIL_TLS_AGENT_CERT"),
 		TLSClientKey:    os.Getenv("CLOUDVIGIL_TLS_AGENT_KEY"),
 		TLSServerName:   envOrDefault("CLOUDVIGIL_TLS_SERVER_NAME", "cloudvigil-server"),
+		WSServer:        envOrDefault("CLOUDVIGIL_WS_SERVER", "ws://localhost:8000"),
 	}
 }
 
@@ -85,6 +92,14 @@ func main() {
 			return runDockerSession(c, cfg, dkr)
 		})
 	}
+
+	// ── Flux 3 : canal de contrôle WebSocket (Log Viewer) ─────────────────────
+	// Se connecte au Master en WS pour recevoir les commandes de streaming de logs.
+	// dkr peut être nil (Docker absent) — wscontrol renvoie alors une erreur explicite.
+	wsClient := wscontrol.NewFromCollector(cfg.WSServer, cfg.NodeID, dkr)
+	go runWithBackoff(ctx, "wscontrol", func(c context.Context) error {
+		return wsClient.Run(c)
+	})
 
 	// Attendre le signal d'arrêt.
 	<-ctx.Done()

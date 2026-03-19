@@ -51,6 +51,11 @@ type Collector struct {
 	cli *client.Client
 }
 
+// DockerClient expose le client Docker sous-jacent pour d'autres usages (ex. wscontrol).
+func (c *Collector) DockerClient() *client.Client {
+	return c.cli
+}
+
 // NewCollector tente de créer un client Docker et vérifie sa disponibilité.
 // Retourne une erreur si Docker n'est pas installé ou si le daemon est inaccessible.
 func NewCollector() (*Collector, error) {

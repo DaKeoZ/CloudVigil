@@ -83,6 +83,9 @@ services:
       CLOUDVIGIL_API_PASSWORD:    ${CLOUDVIGIL_API_PASSWORD:-cloudvigil}
       # ── Alertes ─────────────────────────────────────────────────────────────
       CLOUDVIGIL_ALERTS_CONFIG_PATH: /app/config/alerts.yaml
+      # ── Log Viewer WS ───────────────────────────────────────────────────────
+      # URL HTTP du Master pour le canal WS de l'agent (dérivé depuis le réseau Docker)
+      # Les agents déployés en dehors de ce réseau doivent surcharger cette valeur.
     ports:
       # gRPC : exposé directement (mTLS) pour les agents distants
       - "50051:50051"
