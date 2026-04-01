@@ -62,10 +62,8 @@ def add_MonitoringServiceServicer_to_server(servicer: MonitoringServiceServicer,
             response_serializer=_pb.StreamResponse.SerializeToString,
         ),
     }
-    generic_handler = grpc.method_service_handler(
+    # grpcio ≥ 1.50 : method_service_handler → method_handlers_generic_handler
+    generic_handler = grpc.method_handlers_generic_handler(
         "monitor.MonitoringService", rpc_method_handlers
     )
     server.add_generic_rpc_handlers((generic_handler,))
-    server.add_registered_method_handlers(
-        "monitor.MonitoringService", rpc_method_handlers
-    )
