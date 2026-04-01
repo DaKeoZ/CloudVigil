@@ -72,7 +72,8 @@ services:
       CLOUDVIGIL_INFLUXDB_ORG:    cloudvigil
       CLOUDVIGIL_INFLUXDB_BUCKET: system_metrics
       # ── gRPC ────────────────────────────────────────────────────────────────
-      CLOUDVIGIL_GRPC_LISTEN:     "[::]:50051"
+      # [::]:50051 échoue souvent si IPv6 n'est pas activé dans le conteneur / sur l'hôte.
+      CLOUDVIGIL_GRPC_LISTEN:     "0.0.0.0:50051"
       # ── mTLS (désactiver en commentant les 3 lignes suivantes) ─────────────
       CLOUDVIGIL_TLS_CA_CERT:     /app/certs/ca/ca.crt
       CLOUDVIGIL_TLS_SERVER_CERT: /app/certs/server/server.crt

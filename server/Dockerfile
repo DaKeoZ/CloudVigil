@@ -5,15 +5,11 @@ WORKDIR /app
 COPY server/requirements.txt ./server/requirements.txt
 RUN pip install --no-cache-dir -r server/requirements.txt
 
-COPY proto/ ./proto/
-COPY server/ ./server/
+# Les stubs gRPC / protobuf dans server/pb/ sont versionnés (imports server.pb.*).
+# Ne pas régénérer ici avec protoc : sortirait un monitor_pb2_grpc.py avec
+# « import monitor_pb2 », ce qui casse au runtime dans le conteneur.
 
-# Régénère les stubs depuis le proto au build (nécessite grpcio-tools)
-RUN python -m grpc_tools.protoc \
-        --proto_path=proto \
-        --python_out=server/pb \
-        --grpc_python_out=server/pb \
-        proto/monitor.proto
+COPY server/ ./server/
 
 EXPOSE 8000 50051
 
