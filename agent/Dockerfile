@@ -9,7 +9,8 @@ WORKDIR /src
 # go.mod exige Go 1.25 : télécharge la toolchain si besoin
 ENV GOTOOLCHAIN=auto
 
-COPY go.mod go.sum ./
+# go.sum peut être absent (clone sans fichier) : go mod download complète le graphe.
+COPY go.mod ./
 RUN go mod download
 
 COPY . .
