@@ -58,7 +58,7 @@ async def query_metrics_all_nodes(minutes: int = 10) -> dict[str, list[dict]]:
 from(bucket: "{settings.influxdb_bucket}")
   |> range(start: -{minutes}m)
   |> filter(fn: (r) => r._measurement == "system_metrics")
-  |> pivot(rowKey: ["_time"], columnKey: ["_field"], valueColumn: "_value")
+  |> pivot(rowKey: ["_time", "node_id"], columnKey: ["_field"], valueColumn: "_value")
   |> sort(columns: ["_time"])
 """
     try:

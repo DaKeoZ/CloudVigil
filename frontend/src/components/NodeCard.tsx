@@ -65,12 +65,15 @@ export function NodeCard({ node }: NodeCardProps) {
         </CardHeader>
 
         {/* ── Jauges CPU / RAM / Disque ────────────────────────────────────── */}
-        <CardContent>
-          <div className="grid grid-cols-3 gap-1 mb-1">
+        <CardContent className="pt-2">
+          <div className="grid grid-cols-3 gap-2 justify-items-center sm:gap-3">
             <MetricGauge value={cpu}  label="CPU"    baseColor="#3b82f6" />
             <MetricGauge value={ram}  label="RAM"    baseColor="#a855f7" />
-            <MetricGauge value={disk} label="DISQUE" baseColor="#f59e0b" />
+            <MetricGauge value={disk} label="Disque" baseColor="#f59e0b" />
           </div>
+          <p className="text-[10px] text-slate-600 text-center leading-tight px-1 mt-3">
+            Jauges = dernier point · graphiques = 10 min
+          </p>
 
           {history.length >= 2 && (
             <div className="mt-4 space-y-3">
