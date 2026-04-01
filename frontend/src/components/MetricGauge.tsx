@@ -24,8 +24,10 @@ export function MetricGauge({ value, label, baseColor }: MetricGaugeProps) {
     : safe >= 75 ? "#f97316"
     : baseColor;
 
-  const trackPath = `M ${cx - r} ${cy} A ${r} ${r} 0 0 0 ${cx + r} ${cy}`;
-  const valuePath = `M ${cx - r} ${cy} A ${r} ${r} 0 0 0 ${endX} ${endY}`;
+  /* sweep=1 : demi-cercle SUPÉRIEUR (gauche → droite en passant par le haut).
+     sweep=0 tracerait le demi-cercle inférieur — d’où les arcs « décollés ». */
+  const trackPath = `M ${cx - r} ${cy} A ${r} ${r} 0 0 1 ${cx + r} ${cy}`;
+  const valuePath = `M ${cx - r} ${cy} A ${r} ${r} 0 0 1 ${endX} ${endY}`;
 
   return (
     <div className="flex w-[6.25rem] shrink-0 flex-col items-center sm:w-[6.75rem]">
