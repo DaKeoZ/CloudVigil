@@ -112,11 +112,13 @@ def _make_file_descriptor_bytes() -> bytes:
     return fdp.SerializeToString()
 
 
-DESCRIPTOR = _descriptor_pool.Default().Add(_make_file_descriptor_bytes())
+# protobuf ≥ 5 : Add() attend un FileDescriptorProto, pas des bytes — utiliser AddSerializedFile.
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(_make_file_descriptor_bytes())
 
 _globals = globals()
-_builder.BuildMessageAndEnumTypes(_globals, DESCRIPTOR)
-_builder.BuildTopDescriptorsAndMessages(_globals, "monitor_pb2", _globals)
+# protobuf 5 : BuildMessageAndEnumTypes → BuildMessageAndEnumDescriptors(file_des, module)
+_builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
+_builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, "monitor_pb2", _globals)
 
 if not __import__("google.protobuf.descriptor", fromlist=["_USE_C_DESCRIPTORS"])._USE_C_DESCRIPTORS:
     DESCRIPTOR._options = None
