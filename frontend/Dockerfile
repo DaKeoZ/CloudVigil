@@ -17,6 +17,9 @@ RUN npm ci
 # Copier le code source
 COPY . .
 
+# Garantir l'existence de public/ même si absent du dépôt
+RUN mkdir -p ./public
+
 # NEXT_PUBLIC_API_URL est injecté au moment du build (valeur statique dans le JS).
 # En production derrière Nginx : /api (chemin relatif → même origine).
 ARG  NEXT_PUBLIC_API_URL=/api
@@ -37,7 +40,10 @@ RUN addgroup --system --gid 1001 nodejs \
  && adduser  --system --uid 1001 nextjs
 
 # Copier les artefacts de build
-COPY --from=builder /app/public          ./public
+# public/ est optionnel dans Next.js : on le crée dans le builder pour garantir
+# son existence même si le dépôt ne contient aucun asset statique.
+RUN mkdir -p ./public
+COPY --from=builder /app/public/         ./public/
 COPY --from=builder /app/.next           ./.next
 COPY --from=builder /app/node_modules    ./node_modules
 COPY --from=builder /app/package.json    ./
