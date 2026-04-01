@@ -288,9 +288,22 @@ scp certs/agent/agent.crt user@IP_MACHINE_DISTANTE:/etc/cloudvigil/certs/
 scp certs/agent/agent.key user@IP_MACHINE_DISTANTE:/etc/cloudvigil/certs/
 ```
 
-#### 7b. Lancer l'agent sur la machine distante
+#### 7b. Construire l'image Docker de l'agent
 
-Connectez-vous en SSH sur la machine distante, puis :
+Le dépôt fournit un `agent/Dockerfile`. Il n'existe pas d'image publique « toute faite » sous `ghcr.io/votre-org/...` (c'était un exemple à remplacer).
+
+Sur une machine où vous avez cloné le dépôt (souvent le même VPS que le master) :
+
+```bash
+cd /opt/cloudvigil   # ou le chemin de votre clone
+sudo docker build -f agent/Dockerfile -t cloudvigil-agent:latest ./agent
+```
+
+Vous pouvez ensuite **taguer et pousser** vers votre propre registre si vous déployez l'agent ailleurs.
+
+#### 7c. Lancer l'agent sur la machine surveillée
+
+Connectez-vous en SSH sur la machine où doit tourner l'agent, puis :
 
 ```bash
 docker run -d \
@@ -304,11 +317,13 @@ docker run -d \
   -e CLOUDVIGIL_TLS_CA_CERT=/certs/ca.crt \
   -e CLOUDVIGIL_TLS_AGENT_CERT=/certs/agent.crt \
   -e CLOUDVIGIL_TLS_AGENT_KEY=/certs/agent.key \
-  ghcr.io/votre-org/cloudvigil-agent:latest
+  cloudvigil-agent:latest
 ```
 
-> Remplacez `IP_DU_MASTER` par l'adresse IP publique de votre serveur CloudVigil.  
-> Si vous avez changé le port gRPC (`CV_GRPC_PORT=50052`), utilisez ce port ici aussi.
+> Remplacez `IP_DU_MASTER` par l'adresse IP ou le DNS du serveur CloudVigil, et **le port** par celui de `CV_GRPC_PORT` (ex. `9193` si vous l'avez défini dans `.env`).  
+> Si le dashboard est derrière Nginx sous `/api`, ajoutez par exemple  
+> `-e CLOUDVIGIL_WS_SERVER=wss://VOTRE_DOMAINE/api`  
+> pour le canal WebSocket (logs / contrôle).
 
 Vérifier que l'agent est connecté :
 
@@ -316,11 +331,7 @@ Vérifier que l'agent est connecté :
 docker logs cloudvigil-agent --tail 20
 ```
 
-Vous devriez voir :
-```
-[grpc] connecté au Master (IP_DU_MASTER:50051)
-[wscontrol] connecté au Master (ws://IP_DU_MASTER:50051)
-```
+Vous devriez voir des lignes de connexion gRPC réussie ; le canal WebSocket utilise `CLOUDVIGIL_WS_SERVER` (par défaut `ws://localhost:8000` — à surcharger pour un agent distant, voir ci-dessus).
 
 Dans le dashboard, le serveur apparaît dans la grille après quelques secondes.
 
