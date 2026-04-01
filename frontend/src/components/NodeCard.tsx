@@ -75,16 +75,16 @@ export function NodeCard({ node }: NodeCardProps) {
             Jauges = dernier point · graphiques = 10 min
           </p>
 
-          {history.length >= 2 && (
-            <div className="mt-4 space-y-3">
-              <div>
+          {history.length > 0 && (
+            <div className="mt-4 space-y-3 w-full min-w-0">
+              <div className="min-w-0">
                 <p className="text-[11px] text-slate-500 mb-1 flex items-center gap-1">
                   <span className="inline-block h-2 w-2 rounded-sm bg-blue-500/60" />
                   CPU — 10 dernières minutes
                 </p>
                 <MetricSparkline data={history} metric="cpu_usage" color="blue" label="CPU %" />
               </div>
-              <div>
+              <div className="min-w-0">
                 <p className="text-[11px] text-slate-500 mb-1 flex items-center gap-1">
                   <span className="inline-block h-2 w-2 rounded-sm bg-violet-500/60" />
                   RAM — 10 dernières minutes
