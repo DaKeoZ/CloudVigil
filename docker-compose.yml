@@ -88,10 +88,11 @@ services:
       # Les agents déployés en dehors de ce réseau doivent surcharger cette valeur.
     ports:
       # gRPC : exposé directement (mTLS) pour les agents distants
-      - "50051:50051"
-    # L'API HTTP (8000) n'est PAS exposée publiquement — uniquement via Nginx
-    expose:
-      - "8000"
+      # Changer CV_GRPC_PORT dans .env si le port 50051 est déjà pris sur votre VPS
+      - "${CV_GRPC_PORT:-50051}:50051"
+      # API HTTP : exposée uniquement sur 127.0.0.1 (jamais publiquement).
+      # Le Nginx du VPS proxifie vers ce port. Changer CV_API_PORT si besoin.
+      - "127.0.0.1:${CV_API_PORT:-8001}:8000"
     depends_on:
       influxdb:
         condition: service_healthy
@@ -114,8 +115,11 @@ services:
     restart: unless-stopped
     networks:
       - frontend
-    expose:
-      - "3000"
+    ports:
+      # Exposé uniquement sur l'interface locale (127.0.0.1) — jamais en direct sur
+      # l'Internet. Le Nginx du VPS (ou cloudvigil-nginx) est le seul point d'entrée.
+      # Changer CV_FRONTEND_PORT dans .env si 3003 est déjà pris.
+      - "127.0.0.1:${CV_FRONTEND_PORT:-3003}:3000"
     depends_on:
       server:
         condition: service_healthy
@@ -123,7 +127,11 @@ services:
       NODE_ENV: production
 
   # ── Nginx Reverse Proxy ─────────────────────────────────────────────────────
+  # ⚠️  Ce service n'est lancé QUE si vous passez --profile with-nginx.
+  # Si votre VPS possède déjà un Nginx, utilisez nginx/cloudvigil-vhost.conf
+  # et démarrez sans ce profil : docker compose up -d
   nginx:
+    profiles: ["with-nginx"]
     image: nginx:1.27-alpine
     container_name: cloudvigil-nginx
     restart: unless-stopped
@@ -134,8 +142,9 @@ services:
       # Certificat HTTPS auto-signé (généré par scripts/gen-certs.sh)
       - ./certs/nginx:/etc/nginx/certs:ro
     ports:
-      - "80:80"    # HTTP → redirection HTTPS
-      - "443:443"  # HTTPS (TLS termination)
+      # Changer CV_HTTP_PORT / CV_HTTPS_PORT dans .env si 80/443 sont déjà pris
+      - "${CV_HTTP_PORT:-80}:80"     # HTTP → redirection HTTPS
+      - "${CV_HTTPS_PORT:-443}:443"  # HTTPS (TLS termination)
     depends_on:
       - frontend
       - server
