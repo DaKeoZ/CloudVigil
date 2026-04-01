@@ -25,27 +25,26 @@ echo ""
 
 # ── 1. Autorité de Certification (CA) ────────────────────────────────────────
 echo "▶  [1/4] Génération de la CA (10 ans)..."
+echo "   (clé RSA 4096 bits — peut prendre 30–90 s sur un VPS ; des « . » ou « + » peuvent s’afficher)"
 
-openssl genrsa -out "$CERTS_DIR/ca/ca.key" 4096 2>/dev/null
+openssl genrsa -out "$CERTS_DIR/ca/ca.key" 4096
 
 openssl req -new -x509 -days 3650 \
   -key    "$CERTS_DIR/ca/ca.key" \
   -out    "$CERTS_DIR/ca/ca.crt" \
-  -subj   "/C=FR/ST=Paris/O=CloudVigil/OU=PKI/CN=CloudVigil-Root-CA" \
-  2>/dev/null
+  -subj   "/C=FR/ST=Paris/O=CloudVigil/OU=PKI/CN=CloudVigil-Root-CA"
 
 echo "   ✓  CA : $CERTS_DIR/ca/ca.crt"
 
 # ── 2. Certificat serveur gRPC ────────────────────────────────────────────────
 echo "▶  [2/4] Génération du certificat serveur gRPC (2 ans)..."
 
-openssl genrsa -out "$CERTS_DIR/server/server.key" 2048 2>/dev/null
+openssl genrsa -out "$CERTS_DIR/server/server.key" 2048
 
 openssl req -new \
   -key  "$CERTS_DIR/server/server.key" \
   -out  "$CERTS_DIR/server/server.csr" \
-  -subj "/C=FR/O=CloudVigil/CN=cloudvigil-server" \
-  2>/dev/null
+  -subj "/C=FR/O=CloudVigil/CN=cloudvigil-server"
 
 # SAN : autoriser localhost + nom du service Docker + IP Docker Bridge
 cat > "$CERTS_DIR/server/server.ext" <<EOF
@@ -58,29 +57,26 @@ openssl x509 -req -days 730 \
   -CAkey   "$CERTS_DIR/ca/ca.key" \
   -CAcreateserial \
   -out     "$CERTS_DIR/server/server.crt" \
-  -extfile "$CERTS_DIR/server/server.ext" \
-  2>/dev/null
+  -extfile "$CERTS_DIR/server/server.ext"
 
 echo "   ✓  Serveur : $CERTS_DIR/server/server.{crt,key}"
 
 # ── 3. Certificat agent (client mTLS) ────────────────────────────────────────
 echo "▶  [3/4] Génération du certificat agent / client mTLS (2 ans)..."
 
-openssl genrsa -out "$CERTS_DIR/agent/agent.key" 2048 2>/dev/null
+openssl genrsa -out "$CERTS_DIR/agent/agent.key" 2048
 
 openssl req -new \
   -key  "$CERTS_DIR/agent/agent.key" \
   -out  "$CERTS_DIR/agent/agent.csr" \
-  -subj "/C=FR/O=CloudVigil/CN=cloudvigil-agent" \
-  2>/dev/null
+  -subj "/C=FR/O=CloudVigil/CN=cloudvigil-agent"
 
 openssl x509 -req -days 730 \
   -in    "$CERTS_DIR/agent/agent.csr" \
   -CA    "$CERTS_DIR/ca/ca.crt" \
   -CAkey "$CERTS_DIR/ca/ca.key" \
   -CAcreateserial \
-  -out   "$CERTS_DIR/agent/agent.crt" \
-  2>/dev/null
+  -out   "$CERTS_DIR/agent/agent.crt"
 
 echo "   ✓  Agent : $CERTS_DIR/agent/agent.{crt,key}"
 
@@ -91,8 +87,7 @@ openssl req -x509 -newkey rsa:2048 -nodes -days 730 \
   -keyout "$CERTS_DIR/nginx/nginx.key" \
   -out    "$CERTS_DIR/nginx/nginx.crt" \
   -subj   "/C=FR/O=CloudVigil/CN=localhost" \
-  -addext "subjectAltName=DNS:localhost,IP:127.0.0.1" \
-  2>/dev/null
+  -addext "subjectAltName=DNS:localhost,IP:127.0.0.1"
 
 echo "   ✓  Nginx : $CERTS_DIR/nginx/nginx.{crt,key}"
 
